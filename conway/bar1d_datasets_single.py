@@ -34,12 +34,8 @@ class Bar1D(Dataset):
         #which_stim = 'stimET',
         stim_crop = None,
         time_embed = 2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
-        folded_lags=False,
-        # Stim configuation
-        combine_stim = False, # if False, horizontal stim will be 'stim'
-        stim_gap = 8,
-        # eye configuration
-        eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
+        folded_lags=True, 
+        #luminance_only=True,
         # other
         ignore_saccades = True,
         include_MUs = False,
@@ -59,14 +55,10 @@ class Bar1D(Dataset):
         self.preload = preload
         self.stim_crop = stim_crop
         self.folded_lags = folded_lags
-        self.combine_stim = combine_stim
-        self.eye_config = eye_config
-        self.stim_gap = stim_gap
 
         # get hdf5 file handles
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
-        self.dfs_orig = None
-
+        
         # Data to just read in and store
         self.ETstim_location = np.array(self.fhandles[0]['ETstim_location'], dtype=int)
         self.fix_location = np.array(self.fhandles[0]['fix_location'], dtype=int)[:, 0]
@@ -83,7 +75,7 @@ class Bar1D(Dataset):
         #self.unit_ids = []
         self.num_units, self.num_sus, self.num_mus = [], [], []
         self.sus = []
-        self.NC = 0
+        self.NC = 0    
         #self.stim_dims = None
         self.eyepos = eyepos
         self.generate_Xfix = False
@@ -124,10 +116,7 @@ class Bar1D(Dataset):
             self.num_mus.append(NMUfile)
             self.sus = self.sus + list(range(self.NC, self.NC+NSUfile))
             blk_inds = np.array(fhandle['block_inds'], dtype=np.int64).T
-            stim_eyes = np.array(fhandle['useLeye'], dtype=int) +  \
-                            2*np.array(fhandle['useReye'], dtype=int)
-            
-            Reye = fhandle['useReye']
+
             NCfile = NSUfile
             if self.include_MUs:
                 NCfile += NMUfile
@@ -139,8 +128,15 @@ class Bar1D(Dataset):
             #if self.stim_dims is None:
             #if folded_lags:
             self.dims = [1] + list([fhandle[self.stimname].shape[1]]) + [1, 1] #list(fhandle[stimname].shape[1:4]) + [1]
-            self.NX = self.dims[1]
-          
+            #else:
+            #    self.dims = list(fhandle[stimname].shape[1:4]) + [1]
+            
+            #self.luminance_only = luminance_only
+            #if luminance_only:
+            #    if self.dims[0] > 1:
+            #        print("Reducing stimulus channels (%d) to first dimension"%self.dims[0])
+            #    self.dims[0] = 1
+            
             if self.time_embed > 0:
                 self.dims[3] = self.num_lags
 
@@ -162,27 +158,21 @@ class Bar1D(Dataset):
             # Got through each block to segment into fixations
             for nn in range(blk_inds.shape[0]):
                 # note this will be the inds in each file -- file offset must be added for mult files
-                include_block = True
-                ts = np.arange( blk_inds[nn,0]-1, blk_inds[nn,1], dtype=int)
-                if self.eye_config > 0:
-                    if np.sum(stim_eyes[ts] == self.eye_config) == 0:
-                        include_block = False
-                if include_block:
-                    self.block_inds.append(deepcopy(ts))
-                    t0 = blk_inds[nn, 0]-1
-                    #valid_inds[range(t0, t0+num_lags)] = 0  # this already adjusted for?
+                self.block_inds.append(np.arange( blk_inds[nn,0]-1, blk_inds[nn,1], dtype=int))
+                t0 = blk_inds[nn, 0]-1
+                #valid_inds[range(t0, t0+num_lags)] = 0  # this already adjusted for?
 
-                    # Parse fixation numbers within block
-                    if not ignore_saccades:
-                        rel_saccs = np.where((sacc_inds[:,0] > t0) & (sacc_inds[:,0] < blk_inds[nn,1]))[0]
-                        for mm in range(len(rel_saccs)):
-                            fix_count += 1
-                            fix_n[ range(t0, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
-                            t0 = sacc_inds[rel_saccs[mm], 1]-1
-                    # Put in last (or only) fixation number
-                    if t0 < blk_inds[nn, 1]:
+                # Parse fixation numbers within block
+                if not ignore_saccades:
+                    rel_saccs = np.where((sacc_inds[:,0] > t0) & (sacc_inds[:,0] < blk_inds[nn,1]))[0]
+                    for mm in range(len(rel_saccs)):
                         fix_count += 1
-                        fix_n[ range(t0, blk_inds[nn, 1]) ] = fix_count
+                        fix_n[ range(t0, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
+                        t0 = sacc_inds[rel_saccs[mm], 1]-1
+                # Put in last (or only) fixation number
+                if t0 < blk_inds[nn, 1]:
+                    fix_count += 1
+                    fix_n[ range(t0, blk_inds[nn, 1]) ] = fix_count
             
             tcount += NT
             # make larger fix_n, valid_inds, sacc_inds, block_inds as self
@@ -216,7 +206,8 @@ class Bar1D(Dataset):
         if preload:
             print("Loading data into memory...")
             self.preload_numpy()
-
+            print('Stim shape', self.stimH.shape)
+            # Note stim is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
             if self.eyepos is not None:
                 # Would want to shift by input eye positions if input here
                 print('eye-position shifting not implemented yet')
@@ -228,78 +219,55 @@ class Bar1D(Dataset):
                 idx = np.arange(self.NT)
                 tmp_stimH = self.stimH[np.arange(self.NT)[:,None]-np.arange(num_lags), ...]
                 tmp_stimV = self.stimV[np.arange(self.NT)[:,None]-np.arange(num_lags), ...]
-                if self.combine_stim:
-                    tmp_stimC = self.stimC[np.arange(self.NT)[:,None]-np.arange(num_lags), ...]
-
                 if self.folded_lags:
                     self.stimH = tmp_stimH
                     self.stimV = tmp_stimV
-                    if self.combine_stim:
-                        self.stimC = tmp_stimC 
                     print("Folded lags: stim-dim = ", self.stim.shape)
                 else:
                     self.stimH = np.transpose( tmp_stimH, axes=[0,2,1] )
                     self.stimV = np.transpose( tmp_stimV, axes=[0,2,1] )
-                    if self.combine_stim:
-                        self.stimC = np.transpose( tmp_stimC, axes=[0,2,1] )
+
+            # now stimulus is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
 
             # Flatten stim 
             self.stimV = np.reshape(self.stimV, [self.NT, -1])
             self.stimH = np.reshape(self.stimH, [self.NT, -1])
-            if self.combine_stim:
-                self.stimC = np.reshape(self.stimC, [self.NT, -1])
 
             # Have data_filters represend used_inds (in case it gets through)
             unified_df = np.zeros([self.NT, 1], dtype=np.float32)
             unified_df[self.used_inds] = 1.0
             self.dfs *= unified_df
-
-            # Prepare design matrix for drift (on trial-by-trial basis)
-            self.Xdrift = np.zeros([self.NT, len(self.block_inds)], dtype=np.float32)
-            for nn in range(len(self.block_inds)):
-                self.Xdrift[self.block_inds[nn], nn] = 1.0
-
             # Convert data to tensors
             #if self.device is not None:
             self.to_tensor(self.device)
-            print("Done")
+            print("Done.")
 
         # Create valid indices and first pass of cross-validation indices
         #self.create_valid_indices()
         # Develop default train, validation, and test datasets 
-        self.crossval_setup()
-        if self.combine_stim:
-            self.dims[1] = self.NX*2 + stim_gap
+        #self.crossval_setup()
 
         # Reflects block structure
-        #vblks, trblks = self.fold_sample(len(self.block_inds), 5, random_gen=True)
-        #self.train_inds = []
-        #for nn in trblks:
-        #    self.train_inds += list(deepcopy(self.block_inds[nn]))
-        #self.val_inds = []
-        #for nn in vblks:
-        #    self.val_inds += list(deepcopy(self.block_inds[nn]))
-        #self.train_inds = np.array(self.train_inds, dtype=np.int64)
-        #self.val_inds = np.array(self.val_inds, dtype=np.int64)
+        vblks, trblks = self.fold_sample(len(self.block_inds), 5, random_gen=True)
+        self.train_inds = []
+        for nn in trblks:
+            self.train_inds += list(deepcopy(self.block_inds[nn]))
+        self.val_inds = []
+        for nn in vblks:
+            self.val_inds += list(deepcopy(self.block_inds[nn]))
+        self.train_inds = np.array(self.train_inds, dtype=np.int64)
+        self.val_inds = np.array(self.val_inds, dtype=np.int64)
     # END ColorClouds.__init__
 
     def preload_numpy(self):
         """Note this loads stimulus but does not time-embed"""
 
         NT = self.NT
-        NX = self.dims[1]
-        NX2 = NX*2 + self.stim_gap
-
         ''' 
         Pre-allocate memory for data
         '''
-        self.stimH = np.zeros( [NT] + [NX], dtype=np.float32)
-        self.stimV = np.zeros( [NT] + [NX], dtype=np.float32)
-        if self.combine_stim:
-            self.stimC = np.zeros( [NT] + [NX2], dtype=np.float32)
-        else:
-            self.stimC = None
-
+        self.stimH = np.zeros( [NT] + [self.dims[1]], dtype=np.float32)
+        self.stimV = np.zeros( [NT] + [self.dims[1]], dtype=np.float32)
         self.robs = np.zeros( [NT, self.NC], dtype=np.float32)
         self.dfs = np.ones( [NT, self.NC], dtype=np.float32)
         #self.eyepos = np.zeros([NT, 2], dtype=np.float32)
@@ -352,11 +320,7 @@ class Bar1D(Dataset):
             t_counter += sz[0]
             unit_counter += self.num_units[ee]
 
-        self.stimname = 'stim'  # not sure what this does
-
-        if self.combine_stim:
-            self.stimC[:, range(NX)] = deepcopy(self.stimH)
-            self.stimC[:, range(NX+self.stim_gap, NX2)] = deepcopy(self.stimV)
+        self.stimname = 'stimH'  # either work I think
     # END .preload_numpy()
 
     def to_tensor(self, device):
@@ -366,20 +330,13 @@ class Bar1D(Dataset):
             self.stimV = self.stimV.to(device)
             self.robs = self.robs.to(device)
             self.dfs = self.dfs.to(device)
-            self.Xdrift = self.Xdrift.to(device)
             self.fix_n = self.fix_n.to(device)
-            if self.combine_stim:
-                self.stimC = self.stimC.to(device)
-
         else:
             self.stimH = torch.tensor(self.stimH, dtype=torch.float32, device=device)
             self.stimV = torch.tensor(self.stimV, dtype=torch.float32, device=device)
             self.robs = torch.tensor(self.robs, dtype=torch.float32, device=device)
             self.dfs = torch.tensor(self.dfs, dtype=torch.float32, device=device)
             self.fix_n = torch.tensor(self.fix_n, dtype=torch.int64, device=device)
-            self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
-            if self.combine_stim:
-                self.stimC = torch.tensor(self.stimC, dtype=torch.float32, device=device)
 
     #    self.sacc_ts = torch.tensor(self.sacc_ts, dtype=torch.float32, device=device)
         #self.eyepos = torch.tensor(self.eyepos.astype('float32'), dtype=self.dtype, device=device)
@@ -408,36 +365,6 @@ class Bar1D(Dataset):
             print('Still need to implement avRs without preloading')
             return None
     # END .avrates()
-
-    def apply_data_mask( self, dmask, crange=None ):
-        """For when data_filters (or a section) is modified based on models, and want to apply
-        to the dataset. Ideally would save the original"""
-        assert self.preload, "data must be preloaded to apply mask"
-        if not isinstance(dmask, torch.Tensor):
-            dmask = torch.tensor(dmask, dtype=torch.float32)
-        if len(dmask.shape) == 1:
-            dmask = dmask[:, None]
-        NT, mask_size = dmask.shape
-        assert NT == self.NT, "Data mask is wrong length"
-        if len(self.cells_out) == 0:
-            cells_out = np.arange(self.NC, dtype=int)
-        else:
-            cells_out = np.array(self.cells_out, dtype=int)
-        if crange is None:
-            crange = np.arange(len(cells_out), dtype=int)
-        assert mask_size == len(crange), "mask does not cover the right range"
-
-        if self.dfs_orig is None:
-            self.dfs_orig = deepcopy(self.dfs)
-        # Given all assertions worked, then make copy
-
-        self.dfs.data[:, cells_out[crange]] = deepcopy(dmask)
-    # END .apply_data_mask()
-
-    def data_mask_revert( self, crange=None ):
-        assert self.dfs_orig is not None, "Nothing to revert"
-        self.dfs = deepcopy(self.dfs_orig)
-        self.dfs_orig = None
 
     def shift_stim_fixation( self, stim, shift):
         """Simple shift by integer (rounded shift) and zero padded. Note that this is not in 
@@ -478,7 +405,7 @@ class Bar1D(Dataset):
         self.valid_inds = np.where(is_valid > 0)[0]
     # END .create_valid_indices
 
-    def crossval_setup(self, folds=5, random_gen=False, test_set=False, verbose=False):
+    def crossval_setup(self, folds=5, random_gen=False, test_set=True, verbose=False):
         """This sets the cross-validation indices up We can add featuers here. Many ways to do this
         but will stick to some standard for now. It sets the internal indices, which can be read out
         directly or with helper functions. Perhaps helper_functions is the best way....
@@ -489,47 +416,47 @@ class Bar1D(Dataset):
         Outputs:
             None: sets internal variables test_inds, train_inds, val_inds
         """
-        assert self.used_inds is not None, "Must first specify valid_indices before setting up cross-validation."
+        assert self.valid_inds is not None, "Must first specify valid_indices before setting up cross-validation."
 
-        # Reflect block structure
-        Nblks = len(self.block_inds)
-        val_blk1, tr_blk1 = self.fold_sample(Nblks, folds, random_gen=random_gen)
-
-        if test_set:
-            self.test_blks = val_blk1
-            val_blk2, tr_blk2 = self.fold_sample(len(tr_blk1), folds, random_gen=random_gen)
-            self.val_blks = tr_blk1[val_blk2]
-            self.train_blks = tr_blk1[tr_blk2]
-        else:
-            self.val_blks = val_blk1
-            self.train_blks = tr_blk1
-            self.test_blks = []
+        # Partition data by saccades, and then associate indices with each
+        te_fixes, tr_fixes, val_fixes = [], [], []
+        for ee in range(len(self.fixation_grouping)):  # Loops across experiments
+            fixations = np.array(self.fixation_grouping[ee])  # fixations associated with each experiment
+            val_fix1, tr_fix1 = self.fold_sample(len(fixations), folds, random_gen=random_gen)
+            if test_set:
+                te_fixes += list(fixations[val_fix1])
+                val_fix2, tr_fix2 = self.fold_sample(len(tr_fix1), folds, random_gen=random_gen)
+                val_fixes += list(fixations[tr_fix1[val_fix2]])
+                tr_fixes += list(fixations[tr_fix1[tr_fix2]])
+            else:
+                val_fixes += list(fixations[val_fix1])
+                tr_fixes += list(fixations[tr_fix1])
 
         if verbose:
             print("Partitioned %d fixations total: tr %d, val %d, te %d"
-                %(len(te_blks)+len(tr_blks)+len(val_blks),len(tr_blks), len(val_blks), len(te_blks)))  
+                %(len(te_fixes)+len(tr_fixes)+len(val_fixes),len(tr_fixes), len(val_fixes), len(te_fixes)))  
 
-        # Now pull indices from each saccade 
+        # Now pull  indices from each saccade 
         tr_inds, te_inds, val_inds = [], [], []
-        for nn in self.train_blks:
-            tr_inds += list(deepcopy(self.block_inds[nn]))
-        for nn in self.val_blks:
-            val_inds += list(deepcopy(self.block_inds[nn]))
-        for nn in self.test_blks:
-            te_inds += list(deepcopy(self.block_inds[nn]))
+        for nn in tr_fixes:
+            tr_inds += range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])
+        for nn in val_fixes:
+            val_inds += range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])
+        for nn in te_fixes:
+            te_inds += range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])
 
         if verbose:
             print( "Pre-valid data indices: tr %d, val %d, te %d" %(len(tr_inds), len(val_inds), len(te_inds)) )
 
-        # Finally intersect with used_inds
-        self.train_inds = np.array(list(set(tr_inds) & set(self.used_inds)))
-        self.val_inds = np.array(list(set(val_inds) & set(self.used_inds)))
-        self.test_inds = np.array(list(set(te_inds) & set(self.used_inds)))
+        # Finally intersect with valid indices
+        self.train_inds = np.array(list(set(tr_inds) & set(self.valid_inds)))
+        self.val_inds = np.array(list(set(val_inds) & set(self.valid_inds)))
+        self.test_inds = np.array(list(set(te_inds) & set(self.valid_inds)))
 
         if verbose:
             print( "Valid data indices: tr %d, val %d, te %d" %(len(self.train_inds), len(self.val_inds), len(self.test_inds)) )
 
-    # END .crossval_setup()
+    # END MultiDatasetFix.crossval_setup
 
     def fold_sample( self, num_items, folds, random_gen=False):
         """This really should be a general method not associated with self"""
@@ -588,27 +515,24 @@ class Bar1D(Dataset):
                 #    stim = np.transpose( tmp_stim, axes=[0,2,3,4,1] )
     
             else:
-                if self.combine_stim:
-                    out = {
-                        'stim': self.stimC[idx, :], 
-                        'stimH': self.stimH[idx, :], 
-                        'stimV': self.stimV[idx, :]}
-                else:
-                    out = {
-                        'stim': self.stimH[idx, :], 
-                        'stimV': self.stimV[idx, :]}
-                out['fix_n'] = self.fix_n[idx]
-                out['Xdrift'] = self.Xdrift[idx]
-
                 if len(self.cells_out) == 0:
-                    out['robs'] = self.robs[idx, :]
-                    out['dfs'] = self.dfs[idx, :]
+                    out = {
+                        'stim': self.stimH[idx, :],  # one stim has to be called stim 
+                        'stimV': self.stimV[idx, :],
+                        'robs': self.robs[idx, :],
+                        'dfs': self.dfs[idx, :],
+                        'fix_n': self.fix_n[idx]}
+                        # missing saccade timing vector -- not specified
                 else:
                     assert isinstance(self.cells_out, list), 'cells_out must be a list'
-                    robs_tmp = self.robs[:, self.cells_out]
-                    dfs_tmp = self.dfs[:, self.cells_out]
-                    out['robs'] = robs_tmp[idx, :]
-                    out['dfs'] = dfs_tmp[idx, :]
+                    robs_tmp =  self.robs[:, self.cells_out]
+                    dfs_tmp =  self.dfs[:, self.cells_out]
+                    out = {
+                        'stim': self.stimH[idx, :],
+                        'stimV': self.stimV[idx, :],
+                        'robs': robs_tmp[idx, :],
+                        'dfs': dfs_tmp[idx, :],
+                        'fix_n': self.fix_n[idx]}
             
         else:
             inds = self.valid_inds[idx]
@@ -645,4 +569,4 @@ class Bar1D(Dataset):
         return out                
 
     def __len__(self):
-        return self.NT
+        return len(self.used_inds)
