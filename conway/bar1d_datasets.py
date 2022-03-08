@@ -268,6 +268,10 @@ class Bar1D(Dataset):
         #self.create_valid_indices()
         # Develop default train, validation, and test datasets 
         self.crossval_setup()
+
+        # Fix Xdrift to remove test and validation sets
+        self.adjust_Xdrift_xval()
+
         if self.combine_stim:
             self.dims[1] = self.NX*2 + stim_gap
 
@@ -543,6 +547,21 @@ class Bar1D(Dataset):
             val_items = np.arange(offset, num_items, folds, dtype='int32')
             rem_items = np.delete(np.arange(num_items, dtype='int32'), val_items)
         return val_items, rem_items
+
+    def adjust_Xdrift_xval( self ):
+    # Adjust drift matrix to not fit xval parameterz
+        Xnew = self.Xdrift[:, self.train_blks]
+        for ii in range(len(self.val_blks)):
+            newpos = self.val_blks[ii] - ii # this will be where lower range is
+            if newpos == 0:
+                Xnew[self.block_inds[0], 0] = 1.0
+            elif newpos == Xnew.shape[1]-1:
+                Xnew[self.block_inds[-1], -1] = 1.0
+            else:  # In between
+                Xnew[self.block_inds[self.val_blks[ii]], newpos-1] = 0.5
+                Xnew[self.block_inds[self.val_blks[ii]], newpos] = 0.5
+        self.Xdrift = Xnew
+    # END .adjust_drift_xval
 
     def get_max_samples(self, gpu_n=0, history_size=1, nquad=0, num_cells=None, buffer=1.2):
         """
