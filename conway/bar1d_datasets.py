@@ -33,6 +33,8 @@ class Bar1D(Dataset):
         num_lags=10, 
         #which_stim = 'stimET',
         stim_crop = None,
+        Hstim_shift = 0,  # to shift-and-wrap stimH stimulus
+        Hdiscardzero=True,
         time_embed = 2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
         folded_lags=False,
         # Stim configuation
@@ -62,6 +64,8 @@ class Bar1D(Dataset):
         self.combine_stim = combine_stim
         self.eye_config = eye_config
         self.stim_gap = stim_gap
+        self.stimHshift = Hstim_shift
+        self.Hdiscardzero = Hdiscardzero
 
         # get hdf5 file handles
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
@@ -95,11 +99,14 @@ class Bar1D(Dataset):
         self.MUinds = []
         self.cells_out = []  # can be list to output specific cells in get_item
         self.avRs = None
+        self.with_shifter = False
+        self.shifts = None
 
         # Set up to store default train_, val_, test_inds
         self.test_inds = None
         self.val_inds = None
         self.train_inds = None
+        self.train_blks, self.val_blks, self.test_blks = None, None, None
 
         # Data to construct and store in memory
         self.fix_n = []
@@ -322,8 +329,8 @@ class Bar1D(Dataset):
             self.stimH[inds, :] = deepcopy(tmp_stim)
             self.stimV[inds, :] = tmp_stim
             stim_ori = np.array(fhandle['stimETori'], dtype=np.int32)[:, 0]
-            Hinds = np.where(stim_ori < 45)[0]
-            Vinds = np.where(stim_ori > 45)[0]
+            Hinds = np.where(stim_ori > 45)[0]
+            Vinds = np.where(stim_ori < 45)[0]
 
             self.stimH[inds[Vinds], ...] = 0.0
             self.stimV[inds[Hinds], ...] = 0.0
@@ -361,8 +368,30 @@ class Bar1D(Dataset):
         if self.combine_stim:
             self.stimC[:, range(NX)] = deepcopy(self.stimH)
             self.stimC[:, range(NX+self.stim_gap, NX2)] = deepcopy(self.stimV)
-    # END .preload_numpy()
 
+        sh = abs(self.stimHshift)
+        if sh > 0:
+            Lc = self.NX - sh
+            tmp_stim = np.zeros(self.stimH.shape, dtype=np.float32)
+            if self.Hdiscardzero:
+                print('  Discarding stim at 0 horizontal position')
+                if self.stimHshift < 0:
+                    tmp_stim[:, range(Lc)] = deepcopy(self.stimH[:, range(sh, self.NX)])
+                    tmp_stim[:, range(Lc, self.NX-1)] = deepcopy(self.stimH[:, range(1,sh)])
+                elif self.stimHshift > 0:
+                    tmp_stim[:, range(sh, self.NX-1)] = deepcopy(self.stimH[:, range(1,Lc)])
+                    tmp_stim[:, range(sh)] = deepcopy(self.stimH[:, range(Lc, self.NX)])
+            else:
+                if self.stimHshift < 0:
+                    tmp_stim[:, range(Lc)] = deepcopy(self.stimH[:, range(sh, self.NX)])
+                    tmp_stim[:, range(Lc, self.NX)] = deepcopy(self.stimH[:, range(sh)])
+                elif self.stimHshift > 0:
+                    tmp_stim[:, range(sh, self.NX)] = deepcopy(self.stimH[:, range(Lc)])
+                    tmp_stim[:, range(sh)] = deepcopy(self.stimH[:, range(Lc, self.NX)])
+
+            self.stimH = deepcopy(tmp_stim)
+    # END .preload_numpy()
+        
     def to_tensor(self, device):
         if isinstance(self.stimH, torch.Tensor):
             # then already converted: just moving device
@@ -388,6 +417,19 @@ class Bar1D(Dataset):
     #    self.sacc_ts = torch.tensor(self.sacc_ts, dtype=torch.float32, device=device)
         #self.eyepos = torch.tensor(self.eyepos.astype('float32'), dtype=self.dtype, device=device)
         #self.frame_times = torch.tensor(self.frame_times.astype('float32'), dtype=self.dtype, device=device)
+
+    def add_shifter( self, shifts ):
+        assert len(shifts == self.NT), "Entered shifts is wrong size."
+        if not self.with_shifter:
+            self.with_shifter = True
+        # else: Delete old shifts?
+        
+        device = self.stim.device
+
+        if isinstance( shifts, torch.tensor):
+            self.shifts = shifts.to(device)
+        else:
+            self.shifts = torch.tensor( shifts, dtype=torch.float32, device=device)
 
     def avrates( self, inds=None ):
         """
@@ -511,7 +553,7 @@ class Bar1D(Dataset):
 
         if verbose:
             print("Partitioned %d fixations total: tr %d, val %d, te %d"
-                %(len(te_blks)+len(tr_blks)+len(val_blks),len(tr_blks), len(val_blks), len(te_blks)))  
+                %(len(self.test_blks)+len(self.train_blks)+len(self.val_blks),len(self.train_blks), len(self.val_blks), len(self.test_blks)))  
 
         # Now pull indices from each saccade 
         tr_inds, te_inds, val_inds = [], [], []
@@ -555,7 +597,7 @@ class Bar1D(Dataset):
             newpos = self.val_blks[ii] - ii # this will be where lower range is
             if newpos == 0:
                 Xnew[self.block_inds[0], 0] = 1.0
-            elif newpos == Xnew.shape[1]-1:
+            elif newpos == Xnew.shape[1]:
                 Xnew[self.block_inds[-1], -1] = 1.0
             else:  # In between
                 Xnew[self.block_inds[self.val_blks[ii]], newpos-1] = 0.5
@@ -652,7 +694,7 @@ class Bar1D(Dataset):
                     (robs, torch.tensor(self.fhandles[f]['RobsMU'][inds,:], dtype=torch.float32)), 
                     dim=1)
 
-                """ Datafilters: needs padding like robs """
+            """ Datafilters: needs padding like robs """
             dfs = torch.tensor(self.fhandles[f]['DFs'][inds,:], dtype=torch.float32)
             if self.include_MUs:
                 dfs = torch.cat(
@@ -661,6 +703,10 @@ class Bar1D(Dataset):
 
             out = {'stim': stim, 'stimV': stimV, 'robs': robs, 'dfs': dfs, 'fix_n': self.fix_n[inds]}
 
+        if self.with_shifter:
+            assert self.shifts is not None, "DATASET: shifts missing but 'with_shifter' is true" 
+            out['shifts'] = self.shifts[idx]
+            
         return out                
 
     def __len__(self):
