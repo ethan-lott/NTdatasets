@@ -249,8 +249,11 @@ class MultiDataset(Dataset):
         if len(inds) == self.NT:
             # then calculate across whole dataset
             if self.avRs is not None:
-                # then precalculated and do not need to do
-                return self.avRs
+                if self.cells_out is None:
+                    return self.avRs
+                if len(self.cells_out) == len(self.avRs):
+                    # then precalculated and do not need to do
+                    return self.avRs
 
         # Otherwise calculate across all data
         if self.preload:
