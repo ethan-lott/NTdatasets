@@ -256,6 +256,9 @@ class MultiDataset(Dataset):
         if self.preload:
             Reff = (self.dfs * self.robs).sum(dim=0).cpu()
             Teff = self.dfs.sum(dim=0).clamp(min=1e-6).cpu()
+            if self.cells_out is not None:
+                if len(self.cells_out) > 0:
+                    return (Reff[self.cells_out]/Teff[self.cells_out]).detach().numpy()
             return (Reff/Teff).detach().numpy()
         else:
             print('Still need to implement avRs without preloading')
