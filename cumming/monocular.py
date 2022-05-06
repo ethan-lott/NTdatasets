@@ -177,11 +177,13 @@ class MultiDataset(Dataset):
 
     def __getitem__(self, index):
         
-        if type(index) is int:
-            index = [index]
+        if isinstance(index, int) or isinstance(index, np.int64):
+            index = np.array([index], dtype=np.int64)
         elif type(index) is slice:
             index = list(range(index.start or 0, index.stop or self.NT, index.step or 1))
-
+        if isinstance(index, list):
+            index = np.array(index, dtype=np.int64)
+    
         if self.preload:
             stim = self.stim[index, :]
             robs = self.robs[index, :]
@@ -227,8 +229,8 @@ class MultiDataset(Dataset):
 
         if self.cells_out is not None:
             cells_out = np.array(self.cells_out, dtype=np.int64)
-            assert len(cells_out) > 0, 'cells_out must be a non-zero length'
-            assert np.max(cells_out) < robs.shape[1]
+            assert len(cells_out) > 0, "DATASET: cells_out must be a non-zero length"
+            assert np.max(cells_out) < self.robs.shape[1],  "DATASET: cells_out must be a non-zero length"
             return {'stim': stim, 'robs': robs[:, cells_out], 'dfs': dfs[:, cells_out]}
         else:
             return {'stim': stim, 'robs': robs, 'dfs': dfs}
