@@ -37,6 +37,7 @@ class ColorClouds(Dataset):
         folded_lags=True, 
         luminance_only=True,
         maxT = None,
+        eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
         # other
         ignore_saccades = True,
         include_MUs = False,
@@ -56,6 +57,7 @@ class ColorClouds(Dataset):
         self.preload = preload
         self.stim_crop = stim_crop
         self.folded_lags = folded_lags
+        self.eye_config = eye_config
 
         # get hdf5 file handles
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
@@ -107,7 +109,9 @@ class ColorClouds(Dataset):
             self.num_mus.append(NMUfile)
             self.sus = self.sus + list(range(self.NC, self.NC+NSUfile))
             blk_inds = np.array(fhandle['block_inds'], dtype=np.int64).T
-
+            self.channel_map = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)
+            self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)
+            
             NCfile = NSUfile
             if self.include_MUs:
                 NCfile += NMUfile
@@ -278,6 +282,12 @@ class ColorClouds(Dataset):
             else:
                 self.stim[inds, ...] = np.array(fhandle[self.stimname], dtype=np.float32)
 
+            """ EYE configuration """
+            if self.eye_config > 0:
+                Lpresent = np.array(fhandle['useLeye'], dtype=int)
+                Rpresent = np.array(fhandle['useReye'], dtype=int)
+                LRpresent = Lpresent + 2*Rpresent
+
             """ EYE POSITION """
             #ppd = fhandle[stim][self.stimset]['Stim'].attrs['ppd'][0]
             #centerpix = fhandle[stim][self.stimset]['Stim'].attrs['center'][:]
@@ -298,7 +308,7 @@ class ColorClouds(Dataset):
                 num_mus = fhandle['RobsMU'].shape[1]
                 units = range(unit_counter+num_sus, unit_counter+num_sus+num_mus)
                 robs_tmp[:, units] = np.array(fhandle['RobsMU'], dtype=np.float32)
-                dfs_tmp[:, units] = np.array(fhandle['DFsMU'], dtype=np.float32)
+                dfs_tmp[:, units] = np.array(fhandle['datafiltsMU'], dtype=np.float32)
             
             self.robs[inds,:] = deepcopy(robs_tmp)
             self.dfs[inds,:] = deepcopy(dfs_tmp)
@@ -315,6 +325,23 @@ class ColorClouds(Dataset):
 
         # once stim loaded from disk, make sure stim is named regular
         self.stimname = 'stim'
+
+        # Apply eye_config test
+        if self.eye_config > 0:
+            # Trim to relevant 
+            to_use = np.where(LRpresent == self.eye_config)[0]
+            print("  Trimming experiment %d->%d time points based on binoc preference"%(self.NT, len(to_use)) )
+            self.stim = self.stim[to_use,:]
+            self.robs = self.robs[to_use,:]
+            self.dfs = self.dfs[to_use,:]
+            self.NT = len(to_use)
+            self.used_inds = self.used_inds[self.used_inds < self.NT]
+            # Also check block_inds
+            for ii in range(len(self.block_inds)):
+                if self.block_inds[ii][-1] < self.NT:
+                    last_block = ii
+            self.block_inds = self.block_inds[:(last_block+1)]
+
     # END .preload_numpy()
 
     def to_tensor(self, device):
