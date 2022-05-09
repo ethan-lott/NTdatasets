@@ -42,7 +42,8 @@ class ColorClouds(Dataset):
         ignore_saccades = True,
         include_MUs = False,
         preload = True,
-        eyepos = None, 
+        eyepos = None,
+        drift_interval = None,
         device=torch.device('cpu')):
         """Constructor options"""
 
@@ -58,6 +59,8 @@ class ColorClouds(Dataset):
         self.stim_crop = stim_crop
         self.folded_lags = folded_lags
         self.eye_config = eye_config
+        self.luminance_only = luminance_only
+        self.drift_interval = drift_interval
 
         # get hdf5 file handles
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
@@ -125,8 +128,13 @@ class ColorClouds(Dataset):
             self.dims = list(fhandle[stimname].shape[1:4]) + [1]
             #else:
             #    self.dims = list(fhandle[stimname].shape[1:4]) + [1]
-            
-            self.luminance_only = luminance_only
+
+            """ EYE configuration """
+            if self.eye_config > 0:
+                Lpresent = np.array(fhandle['useLeye'], dtype=int)
+                Rpresent = np.array(fhandle['useReye'], dtype=int)
+                LRpresent = Lpresent + 2*Rpresent
+
             if luminance_only:
                 if self.dims[0] > 1:
                     print("Reducing stimulus channels (%d) to first dimension"%self.dims[0])
@@ -175,7 +183,6 @@ class ColorClouds(Dataset):
         self.NT  = tcount
         if maxT is not None:
             print("Would be shortening dataset from %d to %d."%(self.NT, maxT))
-            #self.NT = maxT
             print('But this is a bad idea -- wont do for now')
             # will need to parse out block inds and valid_data
 
@@ -187,7 +194,8 @@ class ColorClouds(Dataset):
         self.sac_on = deepcopy(sacc_on)
         self.sac_off = deepcopy(sacc_off)
         self.sacc_inds = deepcopy(sacc_inds)
-        
+        #self.LRpresent = LRpresent
+
         # Go through saccades to establish val_indices and produce saccade timing vector 
         # Note that sacc_ts will be generated even without preload -- small enough that doesnt matter
     #    self.sacc_ts = np.zeros([self.NT, 1], dtype=np.float32)
@@ -206,6 +214,7 @@ class ColorClouds(Dataset):
         if preload:
             print("Loading data into memory...")
             self.preload_numpy()
+
             print('Stim shape', self.stim.shape)
             # Note stim is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
             if self.eyepos is not None:
@@ -233,17 +242,44 @@ class ColorClouds(Dataset):
             unified_df = np.zeros([self.NT, 1], dtype=np.float32)
             unified_df[self.used_inds] = 1.0
             self.dfs *= unified_df
-            # Convert data to tensors
-            #if self.device is not None:
-            self.to_tensor(self.device)
-            print("Done.")
 
-        # Create valid indices and first pass of cross-validation indices
-        #self.create_valid_indices()
+        ### REDUCE EXPERIMENTAL VARIABLES TO VALID EXPERIMENTAL CONDITIONS
+        # Apply eye_config test
+        if self.eye_config > 0:
+            # Trim to relevant 
+            to_use = np.where(LRpresent == self.eye_config)[0]
+            print("  Trimming experiment %d->%d time points based on binoc preference"%(self.NT, len(to_use)) )
+            self.stim = self.stim[to_use,:]
+            self.robs = self.robs[to_use,:]
+            self.dfs = self.dfs[to_use,:]
+            self.NT = len(to_use)
+            self.used_inds = np.intersect1d( self.used_inds, to_use )
+            # Also check block_inds
+            new_blocks = []
+            for ii in range(len(self.block_inds)):
+                valid_inds = np.intersect1d( self.block_inds[ii], to_use )
+                if len(valid_inds) > 0:
+                    new_blocks.append(valid_inds)
+            self.block_inds = new_blocks
+
+        ### Construct drift term if relevant
+        if self.drift_interval is None:
+            self.Xdrift = None
+        else:
+            NBL = len(self.block_inds)
+            Nanchors = NBL//self.drift_interval
+            anchors = np.zeros(Nanchors, dtype=np.int64)
+            for bb in range(Nanchors):
+                anchors[bb] = self.block_inds[bb][0]
+            self.Xdrift = utils.design_matrix_drift( self.NT, anchors, const_right=True)
+
+        # Convert data to tensors
+        self.to_tensor(self.device)
+        print("Done.")
+
+        # Cross-validation setup
         # Develop default train, validation, and test datasets 
         #self.crossval_setup()
-
-        # Reflects block structure
         vblks, trblks = self.fold_sample(len(self.block_inds), 5, random_gen=True)
         self.train_inds = []
         for nn in trblks:
@@ -282,12 +318,6 @@ class ColorClouds(Dataset):
             else:
                 self.stim[inds, ...] = np.array(fhandle[self.stimname], dtype=np.float32)
 
-            """ EYE configuration """
-            if self.eye_config > 0:
-                Lpresent = np.array(fhandle['useLeye'], dtype=int)
-                Rpresent = np.array(fhandle['useReye'], dtype=int)
-                LRpresent = Lpresent + 2*Rpresent
-
             """ EYE POSITION """
             #ppd = fhandle[stim][self.stimset]['Stim'].attrs['ppd'][0]
             #centerpix = fhandle[stim][self.stimset]['Stim'].attrs['center'][:]
@@ -325,23 +355,6 @@ class ColorClouds(Dataset):
 
         # once stim loaded from disk, make sure stim is named regular
         self.stimname = 'stim'
-
-        # Apply eye_config test
-        if self.eye_config > 0:
-            # Trim to relevant 
-            to_use = np.where(LRpresent == self.eye_config)[0]
-            print("  Trimming experiment %d->%d time points based on binoc preference"%(self.NT, len(to_use)) )
-            self.stim = self.stim[to_use,:]
-            self.robs = self.robs[to_use,:]
-            self.dfs = self.dfs[to_use,:]
-            self.NT = len(to_use)
-            self.used_inds = self.used_inds[self.used_inds < self.NT]
-            # Also check block_inds
-            for ii in range(len(self.block_inds)):
-                if self.block_inds[ii][-1] < self.NT:
-                    last_block = ii
-            self.block_inds = self.block_inds[:(last_block+1)]
-
     # END .preload_numpy()
 
     def to_tensor(self, device):
@@ -351,11 +364,15 @@ class ColorClouds(Dataset):
             self.robs = self.robs.to(device)
             self.dfs = self.dfs.to(device)
             self.fix_n = self.fix_n.to(device)
+            if self.Xdrift is not None:
+                self.Xdrift = self.Xdrift.to(device)
         else:
             self.stim = torch.tensor(self.stim, dtype=torch.float32, device=device)
             self.robs = torch.tensor(self.robs, dtype=torch.float32, device=device)
             self.dfs = torch.tensor(self.dfs, dtype=torch.float32, device=device)
             self.fix_n = torch.tensor(self.fix_n, dtype=torch.int64, device=device)
+            if self.Xdrift is not None:
+                self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
 
     #    self.sacc_ts = torch.tensor(self.sacc_ts, dtype=torch.float32, device=device)
         #self.eyepos = torch.tensor(self.eyepos.astype('float32'), dtype=self.dtype, device=device)
@@ -581,7 +598,15 @@ class ColorClouds(Dataset):
 
             out = {'stim': stim, 'robs': robs, 'dfs': dfs, 'fix_n': self.fix_n[inds]}
 
+        # Addition whether-or-not preloaded
+        if self.Xdrift is not None:
+            out['Xdrift'] = self.Xdrift[idx, :]
+
         return out                
+
+    #@property
+    #def NT(self):
+    #    return len(self.used_inds)
 
     def __len__(self):
         return len(self.used_inds)
