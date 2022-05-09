@@ -1,4 +1,5 @@
 
+from inspect import BlockFinder
 import os
 import numpy as np
 import scipy.io as sio
@@ -39,7 +40,6 @@ class ColorClouds(Dataset):
         maxT = None,
         eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
         # other
-        ignore_saccades = True,
         include_MUs = False,
         preload = True,
         eyepos = None,
@@ -112,6 +112,8 @@ class ColorClouds(Dataset):
             self.num_mus.append(NMUfile)
             self.sus = self.sus + list(range(self.NC, self.NC+NSUfile))
             blk_inds = np.array(fhandle['block_inds'], dtype=np.int64).T
+            blk_inds[:, 0] += -1  # convert to python so range works
+
             self.channel_map = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)
             self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)
             
@@ -150,6 +152,8 @@ class ColorClouds(Dataset):
             self.NC += NCfile
 
             sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
+            sacc_inds[:, 0] += -1  # convert to python so range works
+
             fix_n = np.zeros(NT, dtype=np.int64)  # each time point labels fixation number
             sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
             sacc_on[sacc_inds[:,0]-1] = 1.0
@@ -157,34 +161,11 @@ class ColorClouds(Dataset):
             sacc_off[sacc_inds[:,1]-1] = 1.0
 
             valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[0,:]-1  #range(self.NT)  # default -- to be changed at end of init
-
-            # Got through each block to segment into fixations
-            for nn in range(blk_inds.shape[0]):
-                # note this will be the inds in each file -- file offset must be added for mult files
-                self.block_inds.append(np.arange( blk_inds[nn,0]-1, blk_inds[nn,1], dtype=int))
-                t0 = blk_inds[nn, 0]-1
-                #valid_inds[range(t0, t0+num_lags)] = 0  # this already adjusted for?
-
-                # Parse fixation numbers within block
-                if not ignore_saccades:
-                    rel_saccs = np.where((sacc_inds[:,0] > t0) & (sacc_inds[:,0] < blk_inds[nn,1]))[0]
-                    for mm in range(len(rel_saccs)):
-                        fix_count += 1
-                        fix_n[ range(t0, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
-                        t0 = sacc_inds[rel_saccs[mm], 1]-1
-                # Put in last (or only) fixation number
-                if t0 < blk_inds[nn, 1]:
-                    fix_count += 1
-                    fix_n[ range(t0, blk_inds[nn, 1]) ] = fix_count
             
             tcount += NT
             # make larger fix_n, valid_inds, sacc_inds, block_inds as self
 
         self.NT  = tcount
-        if maxT is not None:
-            print("Would be shortening dataset from %d to %d."%(self.NT, maxT))
-            print('But this is a bad idea -- wont do for now')
-            # will need to parse out block inds and valid_data
 
         # For now let's just debug with one file
         if len(sess_list) > 1:
@@ -194,7 +175,7 @@ class ColorClouds(Dataset):
         self.sac_on = deepcopy(sacc_on)
         self.sac_off = deepcopy(sacc_off)
         self.sacc_inds = deepcopy(sacc_inds)
-        #self.LRpresent = LRpresent
+        self.LRpresent = LRpresent
 
         # Go through saccades to establish val_indices and produce saccade timing vector 
         # Note that sacc_ts will be generated even without preload -- small enough that doesnt matter
@@ -243,24 +224,59 @@ class ColorClouds(Dataset):
             unified_df[self.used_inds] = 1.0
             self.dfs *= unified_df
 
-        ### REDUCE EXPERIMENTAL VARIABLES TO VALID EXPERIMENTAL CONDITIONS
-        # Apply eye_config test
-        if self.eye_config > 0:
-            # Trim to relevant 
-            to_use = np.where(LRpresent == self.eye_config)[0]
-            print("  Trimming experiment %d->%d time points based on binoc preference"%(self.NT, len(to_use)) )
-            self.stim = self.stim[to_use,:]
-            self.robs = self.robs[to_use,:]
-            self.dfs = self.dfs[to_use,:]
-            self.NT = len(to_use)
-            self.used_inds = np.intersect1d( self.used_inds, to_use )
-            # Also check block_inds
-            new_blocks = []
-            for ii in range(len(self.block_inds)):
-                valid_inds = np.intersect1d( self.block_inds[ii], to_use )
-                if len(valid_inds) > 0:
-                    new_blocks.append(valid_inds)
-            self.block_inds = new_blocks
+        ### Process experiment to include relevant eye config
+        if self.eye_config > 0:  # then want to return experiment part consistent with eye config
+            eye_val = np.where(LRpresent == self.eye_config)[0]
+            t0, t1 = np.min(eye_val), np.max(eye_val)+1
+            assert len(eye_val) == (t1-t0), "EYE CONFIG: non-contiguous blocks of correct eye position"
+        else:
+            t0, t1 = 0, self.NT
+
+        if maxT is not None:
+            t1 = np.minimum( t0+maxT, t1 )
+        ts = range(t0, t1)
+        print('T-range:', t0, t1)
+
+        if len(ts) < self.NT:
+            print("  Trimming experiment %d->%d time points based on eye_config and Tmax"%(self.NT, len(ts)) )
+
+            self.stim = self.stim[ts, :]
+            self.robs = self.robs[ts, :]
+            self.dfs = self.dfs[ts, :]
+            self.LRpresent = self.LRpresent[ts]
+
+            self.NT = len(ts)
+
+            self.used_inds = self.used_inds[(self.used_inds >= t0) & (self.used_inds < t1)] - t0
+
+            # Only keep valid blocks/saccades
+            blk_inds = blk_inds - t0 
+            blk_inds = blk_inds[ blk_inds[:, 0] >= 0, :]
+            blk_inds = blk_inds[ blk_inds[:, 1] < self.NT, :]  
+            sacc_inds = sacc_inds - t0
+            sacc_inds = sacc_inds[ sacc_inds[:, 0] >= 0, :]  
+            sacc_inds = sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
+
+        ### Process blocks and fixations/saccades
+        for ii in range(blk_inds.shape[0]):
+            # note this will be the inds in each file -- file offset must be added for mult files
+            self.block_inds.append(np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64))
+
+            # Parse fixation numbers within block
+            rel_saccs = np.where((sacc_inds[:,0] > blk_inds[ii,0]+6) & (sacc_inds[:,0] < blk_inds[ii,1]))[0]
+
+            tfix = blk_inds[ii,0]  # Beginning of fixation by definition
+            for mm in range(len(rel_saccs)):
+                fix_count += 1
+                # Range goes to beginning of next fixation (note no gap)
+                fix_n[ range(tfix, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
+                tfix = sacc_inds[rel_saccs[mm], 1] # next fixation beginning
+            # Put in last (or only) fixation number
+            if tfix < blk_inds[ii, 1]:
+                fix_count += 1
+                fix_n[ range(tfix, blk_inds[ii, 1]) ] = fix_count
+
+        self.fix_n = fix_n
 
         ### Construct drift term if relevant
         if self.drift_interval is None:
@@ -317,15 +333,6 @@ class ColorClouds(Dataset):
                 self.stim[inds, 0, ...] = np.array(fhandle[self.stimname][:, 0, ...], dtype=np.float32)
             else:
                 self.stim[inds, ...] = np.array(fhandle[self.stimname], dtype=np.float32)
-
-            """ EYE POSITION """
-            #ppd = fhandle[stim][self.stimset]['Stim'].attrs['ppd'][0]
-            #centerpix = fhandle[stim][self.stimset]['Stim'].attrs['center'][:]
-            #eye_tmp = fhandle[stim][self.stimset]['eyeAtFrame'][1:3,:].T
-            #eye_tmp[:,0] -= centerpix[0]
-            #eye_tmp[:,1] -= centerpix[1]
-            #eye_tmp/= ppd
-            #self.eyepos[inds,:] = eye_tmp
 
             """ Robs and DATAFILTERS"""
             robs_tmp = np.zeros( [len(inds), self.NC], dtype=np.float32 )
