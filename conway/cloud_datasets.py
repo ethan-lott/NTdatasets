@@ -25,6 +25,10 @@ class ColorClouds(Dataset):
     Constructor will take eye position, which for now is an input from data
     generated in the session (not on disk). It should have the length size 
     of the total number of fixations x1.
+
+    Input arguments (details):
+        stim_crop = None, should be of form [x1, x2, y1, y2] where each number is the 
+            extreme point to be include as an index, e.g. range(x1, x2+1), ... 
     """
 
     def __init__(self,
@@ -33,7 +37,7 @@ class ColorClouds(Dataset):
         # Stim setuup
         num_lags=10, 
         which_stim = None,
-        stim_crop = None,
+        stim_crop = None,  # should be list/array of 4 numbers representing inds of edges
         time_embed = 2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
         folded_lags=True, 
         luminance_only=True,
@@ -201,8 +205,16 @@ class ColorClouds(Dataset):
             if self.eyepos is not None:
                 # Would want to shift by input eye positions if input here
                 print('eye-position shifting not implemented yet')
+
             if self.stim_crop is not None:
-                print('stimulus cropping not implemented yet')
+                assert len(stim_crop) == 4, "stim_crop must be of form: [x1, x2, y1, y2]"
+                #stim_crop = np.array(stim_crop, dtype=np.int64) # make sure array
+                xs = np.arange(stim_crop[0], stim_crop[1]+1)
+                ys = np.arange(stim_crop[2], stim_crop[3]+1)
+                self.stim = self.stim[:, :, :, ys][:, :, xs, :]
+                print("New stim size: %d x %d"%(len(xs), len(ys)))
+                self.dims[1] = len(xs)
+                self.dims[2] = len(ys)
 
             if time_embed == 2:
                 print("Time embedding...")
