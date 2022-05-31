@@ -1,4 +1,5 @@
 
+from inspect import BlockFinder
 import os
 import numpy as np
 import scipy.io as sio
@@ -24,6 +25,10 @@ class ColorClouds(Dataset):
     Constructor will take eye position, which for now is an input from data
     generated in the session (not on disk). It should have the length size 
     of the total number of fixations x1.
+
+    Input arguments (details):
+        stim_crop = None, should be of form [x1, x2, y1, y2] where each number is the 
+            extreme point to be include as an index, e.g. range(x1, x2+1), ... 
     """
 
     def __init__(self,
@@ -32,16 +37,17 @@ class ColorClouds(Dataset):
         # Stim setuup
         num_lags=10, 
         which_stim = None,
-        stim_crop = None,
+        stim_crop = None,  # should be list/array of 4 numbers representing inds of edges
         time_embed = 2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
         folded_lags=True, 
         luminance_only=True,
         maxT = None,
+        eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
         # other
-        ignore_saccades = True,
         include_MUs = False,
         preload = True,
-        eyepos = None, 
+        eyepos = None,
+        drift_interval = None,
         device=torch.device('cpu')):
         """Constructor options"""
 
@@ -56,6 +62,9 @@ class ColorClouds(Dataset):
         self.preload = preload
         self.stim_crop = stim_crop
         self.folded_lags = folded_lags
+        self.eye_config = eye_config
+        self.luminance_only = luminance_only
+        self.drift_interval = drift_interval
 
         # get hdf5 file handles
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
@@ -107,7 +116,11 @@ class ColorClouds(Dataset):
             self.num_mus.append(NMUfile)
             self.sus = self.sus + list(range(self.NC, self.NC+NSUfile))
             blk_inds = np.array(fhandle['block_inds'], dtype=np.int64).T
+            blk_inds[:, 0] += -1  # convert to python so range works
 
+            self.channel_map = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)
+            self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)
+            
             NCfile = NSUfile
             if self.include_MUs:
                 NCfile += NMUfile
@@ -121,8 +134,13 @@ class ColorClouds(Dataset):
             self.dims = list(fhandle[stimname].shape[1:4]) + [1]
             #else:
             #    self.dims = list(fhandle[stimname].shape[1:4]) + [1]
-            
-            self.luminance_only = luminance_only
+
+            """ EYE configuration """
+            if self.eye_config > 0:
+                Lpresent = np.array(fhandle['useLeye'], dtype=int)
+                Rpresent = np.array(fhandle['useReye'], dtype=int)
+                LRpresent = Lpresent + 2*Rpresent
+
             if luminance_only:
                 if self.dims[0] > 1:
                     print("Reducing stimulus channels (%d) to first dimension"%self.dims[0])
@@ -138,6 +156,8 @@ class ColorClouds(Dataset):
             self.NC += NCfile
 
             sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
+            sacc_inds[:, 0] += -1  # convert to python so range works
+
             fix_n = np.zeros(NT, dtype=np.int64)  # each time point labels fixation number
             sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
             sacc_on[sacc_inds[:,0]-1] = 1.0
@@ -145,35 +165,11 @@ class ColorClouds(Dataset):
             sacc_off[sacc_inds[:,1]-1] = 1.0
 
             valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[0,:]-1  #range(self.NT)  # default -- to be changed at end of init
-
-            # Got through each block to segment into fixations
-            for nn in range(blk_inds.shape[0]):
-                # note this will be the inds in each file -- file offset must be added for mult files
-                self.block_inds.append(np.arange( blk_inds[nn,0]-1, blk_inds[nn,1], dtype=int))
-                t0 = blk_inds[nn, 0]-1
-                #valid_inds[range(t0, t0+num_lags)] = 0  # this already adjusted for?
-
-                # Parse fixation numbers within block
-                if not ignore_saccades:
-                    rel_saccs = np.where((sacc_inds[:,0] > t0) & (sacc_inds[:,0] < blk_inds[nn,1]))[0]
-                    for mm in range(len(rel_saccs)):
-                        fix_count += 1
-                        fix_n[ range(t0, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
-                        t0 = sacc_inds[rel_saccs[mm], 1]-1
-                # Put in last (or only) fixation number
-                if t0 < blk_inds[nn, 1]:
-                    fix_count += 1
-                    fix_n[ range(t0, blk_inds[nn, 1]) ] = fix_count
             
             tcount += NT
             # make larger fix_n, valid_inds, sacc_inds, block_inds as self
 
         self.NT  = tcount
-        if maxT is not None:
-            print("Would be shortening dataset from %d to %d."%(self.NT, maxT))
-            #self.NT = maxT
-            print('But this is a bad idea -- wont do for now')
-            # will need to parse out block inds and valid_data
 
         # For now let's just debug with one file
         if len(sess_list) > 1:
@@ -183,7 +179,8 @@ class ColorClouds(Dataset):
         self.sac_on = deepcopy(sacc_on)
         self.sac_off = deepcopy(sacc_off)
         self.sacc_inds = deepcopy(sacc_inds)
-        
+        self.LRpresent = LRpresent
+
         # Go through saccades to establish val_indices and produce saccade timing vector 
         # Note that sacc_ts will be generated even without preload -- small enough that doesnt matter
     #    self.sacc_ts = np.zeros([self.NT, 1], dtype=np.float32)
@@ -202,13 +199,22 @@ class ColorClouds(Dataset):
         if preload:
             print("Loading data into memory...")
             self.preload_numpy()
+
             print('Stim shape', self.stim.shape)
             # Note stim is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
             if self.eyepos is not None:
                 # Would want to shift by input eye positions if input here
                 print('eye-position shifting not implemented yet')
+
             if self.stim_crop is not None:
-                print('stimulus cropping not implemented yet')
+                assert len(stim_crop) == 4, "stim_crop must be of form: [x1, x2, y1, y2]"
+                #stim_crop = np.array(stim_crop, dtype=np.int64) # make sure array
+                xs = np.arange(stim_crop[0], stim_crop[1]+1)
+                ys = np.arange(stim_crop[2], stim_crop[3]+1)
+                self.stim = self.stim[:, :, :, ys][:, :, xs, :]
+                print("New stim size: %d x %d"%(len(xs), len(ys)))
+                self.dims[1] = len(xs)
+                self.dims[2] = len(ys)
 
             if time_embed == 2:
                 print("Time embedding...")
@@ -229,17 +235,79 @@ class ColorClouds(Dataset):
             unified_df = np.zeros([self.NT, 1], dtype=np.float32)
             unified_df[self.used_inds] = 1.0
             self.dfs *= unified_df
-            # Convert data to tensors
-            #if self.device is not None:
-            self.to_tensor(self.device)
-            print("Done.")
 
-        # Create valid indices and first pass of cross-validation indices
-        #self.create_valid_indices()
+        ### Process experiment to include relevant eye config
+        if self.eye_config > 0:  # then want to return experiment part consistent with eye config
+            eye_val = np.where(LRpresent == self.eye_config)[0]
+            t0, t1 = np.min(eye_val), np.max(eye_val)+1
+            assert len(eye_val) == (t1-t0), "EYE CONFIG: non-contiguous blocks of correct eye position"
+        else:
+            t0, t1 = 0, self.NT
+
+        if maxT is not None:
+            t1 = np.minimum( t0+maxT, t1 )
+        ts = range(t0, t1)
+        print('T-range:', t0, t1)
+
+        if len(ts) < self.NT:
+            print("  Trimming experiment %d->%d time points based on eye_config and Tmax"%(self.NT, len(ts)) )
+
+            self.stim = self.stim[ts, :]
+            self.robs = self.robs[ts, :]
+            self.dfs = self.dfs[ts, :]
+            self.LRpresent = self.LRpresent[ts]
+
+            self.NT = len(ts)
+
+            self.used_inds = self.used_inds[(self.used_inds >= t0) & (self.used_inds < t1)] - t0
+
+            # Only keep valid blocks/saccades
+            blk_inds = blk_inds - t0 
+            blk_inds = blk_inds[ blk_inds[:, 0] >= 0, :]
+            blk_inds = blk_inds[ blk_inds[:, 1] < self.NT, :]  
+            sacc_inds = sacc_inds - t0
+            sacc_inds = sacc_inds[ sacc_inds[:, 0] >= 0, :]  
+            sacc_inds = sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
+
+        ### Process blocks and fixations/saccades
+        for ii in range(blk_inds.shape[0]):
+            # note this will be the inds in each file -- file offset must be added for mult files
+            self.block_inds.append(np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64))
+
+            # Parse fixation numbers within block
+            rel_saccs = np.where((sacc_inds[:,0] > blk_inds[ii,0]+6) & (sacc_inds[:,0] < blk_inds[ii,1]))[0]
+
+            tfix = blk_inds[ii,0]  # Beginning of fixation by definition
+            for mm in range(len(rel_saccs)):
+                fix_count += 1
+                # Range goes to beginning of next fixation (note no gap)
+                fix_n[ range(tfix, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
+                tfix = sacc_inds[rel_saccs[mm], 1] # next fixation beginning
+            # Put in last (or only) fixation number
+            if tfix < blk_inds[ii, 1]:
+                fix_count += 1
+                fix_n[ range(tfix, blk_inds[ii, 1]) ] = fix_count
+
+        self.fix_n = fix_n
+
+        ### Construct drift term if relevant
+        if self.drift_interval is None:
+            self.Xdrift = None
+        else:
+            NBL = len(self.block_inds)
+            Nanchors = NBL//self.drift_interval
+            anchors = np.zeros(Nanchors, dtype=np.int64)
+            for bb in range(Nanchors):
+                anchors[bb] = self.block_inds[bb][0]
+            self.Xdrift = utils.design_matrix_drift( self.NT, anchors, const_right=True)
+
+        # Convert data to tensors
+        self.to_tensor(self.device)
+        print("Done.")
+
+        # Cross-validation setup
         # Develop default train, validation, and test datasets 
         #self.crossval_setup()
-
-        # Reflects block structure
         vblks, trblks = self.fold_sample(len(self.block_inds), 5, random_gen=True)
         self.train_inds = []
         for nn in trblks:
@@ -278,15 +346,6 @@ class ColorClouds(Dataset):
             else:
                 self.stim[inds, ...] = np.array(fhandle[self.stimname], dtype=np.float32)
 
-            """ EYE POSITION """
-            #ppd = fhandle[stim][self.stimset]['Stim'].attrs['ppd'][0]
-            #centerpix = fhandle[stim][self.stimset]['Stim'].attrs['center'][:]
-            #eye_tmp = fhandle[stim][self.stimset]['eyeAtFrame'][1:3,:].T
-            #eye_tmp[:,0] -= centerpix[0]
-            #eye_tmp[:,1] -= centerpix[1]
-            #eye_tmp/= ppd
-            #self.eyepos[inds,:] = eye_tmp
-
             """ Robs and DATAFILTERS"""
             robs_tmp = np.zeros( [len(inds), self.NC], dtype=np.float32 )
             dfs_tmp = np.zeros( [len(inds), self.NC], dtype=np.float32 )
@@ -298,7 +357,7 @@ class ColorClouds(Dataset):
                 num_mus = fhandle['RobsMU'].shape[1]
                 units = range(unit_counter+num_sus, unit_counter+num_sus+num_mus)
                 robs_tmp[:, units] = np.array(fhandle['RobsMU'], dtype=np.float32)
-                dfs_tmp[:, units] = np.array(fhandle['DFsMU'], dtype=np.float32)
+                dfs_tmp[:, units] = np.array(fhandle['datafiltsMU'], dtype=np.float32)
             
             self.robs[inds,:] = deepcopy(robs_tmp)
             self.dfs[inds,:] = deepcopy(dfs_tmp)
@@ -324,11 +383,15 @@ class ColorClouds(Dataset):
             self.robs = self.robs.to(device)
             self.dfs = self.dfs.to(device)
             self.fix_n = self.fix_n.to(device)
+            if self.Xdrift is not None:
+                self.Xdrift = self.Xdrift.to(device)
         else:
             self.stim = torch.tensor(self.stim, dtype=torch.float32, device=device)
             self.robs = torch.tensor(self.robs, dtype=torch.float32, device=device)
             self.dfs = torch.tensor(self.dfs, dtype=torch.float32, device=device)
             self.fix_n = torch.tensor(self.fix_n, dtype=torch.int64, device=device)
+            if self.Xdrift is not None:
+                self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
 
     #    self.sacc_ts = torch.tensor(self.sacc_ts, dtype=torch.float32, device=device)
         #self.eyepos = torch.tensor(self.eyepos.astype('float32'), dtype=self.dtype, device=device)
@@ -554,7 +617,15 @@ class ColorClouds(Dataset):
 
             out = {'stim': stim, 'robs': robs, 'dfs': dfs, 'fix_n': self.fix_n[inds]}
 
+        # Addition whether-or-not preloaded
+        if self.Xdrift is not None:
+            out['Xdrift'] = self.Xdrift[idx, :]
+
         return out                
+
+    #@property
+    #def NT(self):
+    #    return len(self.used_inds)
 
     def __len__(self):
         return len(self.used_inds)

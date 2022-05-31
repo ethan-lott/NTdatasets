@@ -75,7 +75,7 @@ class Bar1D(Dataset):
         self.ETstim_location = np.array(self.fhandles[0]['ETstim_location'], dtype=int)
         self.fix_location = np.array(self.fhandles[0]['fix_location'], dtype=int)[:, 0]
         self.probeIDs = np.array(self.fhandles[0]['Robs_probe_ID'], dtype=int)[0,:]-1
-        self.probeIDsMU = np.array(self.fhandles[0]['RobsMU_probe_ID'], dtype=int)[:, 0]
+        self.probeIDsMU = np.array(self.fhandles[0]['RobsMU_probe_ID'], dtype=int)[0,:]-1
         self.dt = np.array(self.fhandles[0]['dt'], dtype=np.float32)[0, 0]
         self.pixel_size = np.array(self.fhandles[0]['pixel_size'], dtype=int)[0, 0]
         self.exptdate = [] # need to learn matlab strings in HDF5 format (not saved as HDF5 string)
@@ -222,17 +222,53 @@ class Bar1D(Dataset):
         #self.fix_n = list(self.fix_n)  # better list than numpy
 
         #self.dims = np.unique(np.asarray(self.dims)) # assumes they're all the same    
-        if self.eyepos is not None:
-            assert len(self.eyepos) == self.num_fixations, \
-                "eyepos input should have %d fixations."%self.num_fixations
+        #if self.eyepos is not None:
+            #assert len(self.eyepos) == self.num_fixations, \
+            #    "eyepos input should have %d fixations."%self.num_fixations
 
         if preload:
             print("Loading data into memory...")
             self.preload_numpy()
 
             if self.eyepos is not None:
-                # Would want to shift by input eye positions if input here
-                print('eye-position shifting not implemented yet')
+                assert (self.eyepos.shape[0] == self.NT) and (self.eyepos.shape[1] == 2), "eye pos wrong shape"
+                # Apply horizontal shifts to stim (stil in numpy)
+                Hshifts = np.unique(eyepos[:,0])
+
+                newstim = deepcopy(self.stimH)
+                for ss in range(len(Hshifts)):
+                    sh = Hshifts[ss]
+                    Lc = NX-abs(sh)
+                    ts = np.where(eyepos[:,0] == sh)[0]
+                    tmp = np.zeros([len(ts), self.NX])
+                    if sh < 0:
+                        tmp[:, range(Lc)] = deepcopy(self.stimH[ts, :][:, range(abs(sh), self.NX)])
+                        tmp[:, range(Lc, self.NX)] = deepcopy(self.stimH[ts,:][:, range(abs(sh))])
+                    elif sh > 0:
+                        tmp[:, range(sh, self.NX)] = deepcopy(self.stimH[ts,:][:, range(Lc)])
+                        tmp[:, range(sh)] = deepcopy(self.stimH[ts,:][:, range(Lc, self.NX)])
+                    if sh != 0:
+                        newstim[ts, :] = deepcopy(tmp)
+                self.stimH = deepcopy(newstim)
+
+                # Apply horizontal shifts to stim (stil in numpy)
+                Vshifts = np.unique(eyepos[:,1])
+                newstim = deepcopy(self.stimV)
+                for ss in range(len(Vshifts)):
+                    sh = Vshifts[ss]
+                    Lc = NX-abs(sh)
+                    ts = np.where(eyepos[:,1] == sh)[0]
+                    tmp = np.zeros([len(ts), self.NX])
+                    if sh < 0:
+                        tmp[:, range(Lc)] = deepcopy(self.stimV[ts, :][:, range(abs(sh), self.NX)])
+                        tmp[:, range(Lc, self.NX)] = deepcopy(self.stimV[ts,:][:, range(abs(sh))])
+                    elif sh > 0:
+                        tmp[:, range(sh, self.NX)] = deepcopy(self.stimV[ts,:][:, range(Lc)])
+                        tmp[:, range(sh)] = deepcopy(self.stimV[ts,:][:, range(Lc, self.NX)])
+                    if sh != 0:
+                        newstim[ts,:] = tmp
+                self.stimV = deepcopy(newstim)
+    
             if self.stim_crop is not None:
                 print('stimulus cropping not implemented yet')
 
@@ -340,15 +376,6 @@ class Bar1D(Dataset):
 
             self.stimH[inds[Vinds], ...] = 0.0
             self.stimV[inds[Hinds], ...] = 0.0
-
-            """ EYE POSITION """
-            #ppd = fhandle[stim][self.stimset]['Stim'].attrs['ppd'][0]
-            #centerpix = fhandle[stim][self.stimset]['Stim'].attrs['center'][:]
-            #eye_tmp = fhandle[stim][self.stimset]['eyeAtFrame'][1:3,:].T
-            #eye_tmp[:,0] -= centerpix[0]
-            #eye_tmp[:,1] -= centerpix[1]
-            #eye_tmp/= ppd
-            #self.eyepos[inds,:] = eye_tmp
 
             """ Robs and DATAFILTERS"""
             robs_tmp = np.zeros( [len(inds), self.NC], dtype=np.float32 )
