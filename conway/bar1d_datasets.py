@@ -121,6 +121,7 @@ class Bar1D(Dataset):
         #else:
         #    stimname = which_stim
         self.stimname = 'stimET'
+        self.ETtraceHR = []
 
         for fnum, fhandle in enumerate(self.fhandles):
 
@@ -205,6 +206,11 @@ class Bar1D(Dataset):
         self.sac_off = deepcopy(sacc_off)
         self.sacc_inds = deepcopy(sacc_inds)
         
+        # PULL OTHER INFO
+        self.ETtraceHR = np.array(fhandle['ETtrace_raw'], dtype=np.float32)
+        self.sort_rating = np.array(fhandle['Robs_rating'], dtype=np.int64)[0, :]
+        self.sort_ratingMU = np.array(fhandle['RobsMU_rating'], dtype=np.int64)[0,:]
+
         # Go through saccades to establish val_indices and produce saccade timing vector 
         # Note that sacc_ts will be generated even without preload -- small enough that doesnt matter
     #    self.sacc_ts = np.zeros([self.NT, 1], dtype=np.float32)
