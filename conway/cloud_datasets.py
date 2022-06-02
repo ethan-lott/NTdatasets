@@ -298,7 +298,7 @@ class ColorClouds(Dataset):
             Nanchors = NBL//self.drift_interval
             anchors = np.zeros(Nanchors, dtype=np.int64)
             for bb in range(Nanchors):
-                anchors[bb] = self.block_inds[bb][0]
+                anchors[bb] = self.block_inds[self.drift_interval*bb][0]
             self.Xdrift = utils.design_matrix_drift( self.NT, anchors, const_right=True)
 
         # Convert data to tensors

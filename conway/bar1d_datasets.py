@@ -40,6 +40,7 @@ class Bar1D(Dataset):
         # Stim configuation
         combine_stim = False, # if False, horizontal stim will be 'stim'
         stim_gap = 8,
+        drift_interval = 16,  # how many trials to anchor each drift term
         # eye configuration
         eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
         # other
@@ -66,6 +67,7 @@ class Bar1D(Dataset):
         self.stim_gap = stim_gap
         self.stimHshift = Hstim_shift
         self.Hdiscardzero = Hdiscardzero
+        self.drift_interval = drift_interval
 
         # get hdf5 file handles
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
@@ -304,9 +306,15 @@ class Bar1D(Dataset):
             self.dfs *= unified_df
 
             # Prepare design matrix for drift (on trial-by-trial basis)
-            self.Xdrift = np.zeros([self.NT, len(self.block_inds)], dtype=np.float32)
-            for nn in range(len(self.block_inds)):
-                self.Xdrift[self.block_inds[nn], nn] = 1.0
+            #self.Xdrift = np.zeros([self.NT, len(self.block_inds)//], dtype=np.float32)
+            #for nn in range(len(self.block_inds)):
+            #    self.Xdrift[self.block_inds[nn], nn] = 1.0
+            NBL = len(self.block_inds)
+            Nanchors = NBL//self.drift_interval
+            anchors = np.zeros(Nanchors, dtype=np.int64)
+            for bb in range(Nanchors):
+                anchors[bb] = self.block_inds[self.drift_interval*bb][0]
+            self.Xdrift = utils.design_matrix_drift( self.NT, anchors, zero_left=False, const_right=True)
 
             # Convert data to tensors
             #if self.device is not None:
@@ -319,7 +327,7 @@ class Bar1D(Dataset):
         self.crossval_setup()
 
         # Fix Xdrift to remove test and validation sets
-        self.adjust_Xdrift_xval()
+        #self.adjust_Xdrift_xval()
 
         if self.combine_stim:
             self.dims[1] = self.NX*2 + stim_gap
