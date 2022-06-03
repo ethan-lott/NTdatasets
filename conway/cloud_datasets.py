@@ -100,7 +100,7 @@ class ColorClouds(Dataset):
         self.sacc_off = []
         self.used_inds = []
 
-        tcount, fix_count = 0, 0
+        tcount = 0
 
         if which_stim is None:
             stimname = 'stim'
@@ -115,7 +115,7 @@ class ColorClouds(Dataset):
             self.num_sus.append(NSUfile)
             self.num_mus.append(NMUfile)
             self.sus = self.sus + list(range(self.NC, self.NC+NSUfile))
-            blk_inds = np.array(fhandle['block_inds'], dtype=np.int64).T
+            blk_inds = np.array(fhandle['block_inds'], dtype=np.int64)
             blk_inds[:, 0] += -1  # convert to python so range works
 
             self.channel_map = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)
@@ -158,13 +158,13 @@ class ColorClouds(Dataset):
             sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
             sacc_inds[:, 0] += -1  # convert to python so range works
 
-            fix_n = np.zeros(NT, dtype=np.int64)  # each time point labels fixation number
+            #fix_n = np.zeros(NT, dtype=np.int64)  # each time point labels fixation number
             sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
             sacc_on[sacc_inds[:,0]-1] = 1.0
             sacc_off = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
             sacc_off[sacc_inds[:,1]-1] = 1.0
 
-            valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[0,:]-1  #range(self.NT)  # default -- to be changed at end of init
+            valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[:,0]-1  #range(self.NT)  # default -- to be changed at end of init
             
             tcount += NT
             # make larger fix_n, valid_inds, sacc_inds, block_inds as self
@@ -175,7 +175,7 @@ class ColorClouds(Dataset):
         if len(sess_list) > 1:
             print('Warning: currently ignoring multiple files')
         self.used_inds = deepcopy(valid_inds)
-        self.fix_n = deepcopy(fix_n)
+        #self.fix_n = deepcopy(fix_n)
         self.sac_on = deepcopy(sacc_on)
         self.sac_off = deepcopy(sacc_off)
         self.sacc_inds = deepcopy(sacc_inds)
@@ -249,6 +249,9 @@ class ColorClouds(Dataset):
         ts = range(t0, t1)
         print('T-range:', t0, t1)
 
+        # Save for potential future adjustments of signal
+        self.startT = t0
+        
         if len(ts) < self.NT:
             print("  Trimming experiment %d->%d time points based on eye_config and Tmax"%(self.NT, len(ts)) )
 
@@ -265,30 +268,16 @@ class ColorClouds(Dataset):
             blk_inds = blk_inds - t0 
             blk_inds = blk_inds[ blk_inds[:, 0] >= 0, :]
             blk_inds = blk_inds[ blk_inds[:, 1] < self.NT, :]  
-            sacc_inds = sacc_inds - t0
-            sacc_inds = sacc_inds[ sacc_inds[:, 0] >= 0, :]  
-            sacc_inds = sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
+            self.sacc_inds = self.sacc_inds - t0
+            self.sacc_inds = self.sacc_inds[ self.sacc_inds[:, 0] >= 0, :]  
+            self.sacc_inds = self.sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
 
         ### Process blocks and fixations/saccades
         for ii in range(blk_inds.shape[0]):
             # note this will be the inds in each file -- file offset must be added for mult files
-            self.block_inds.append(np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64))
+            self.block_inds.append( np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64) )
 
-            # Parse fixation numbers within block
-            rel_saccs = np.where((sacc_inds[:,0] > blk_inds[ii,0]+6) & (sacc_inds[:,0] < blk_inds[ii,1]))[0]
-
-            tfix = blk_inds[ii,0]  # Beginning of fixation by definition
-            for mm in range(len(rel_saccs)):
-                fix_count += 1
-                # Range goes to beginning of next fixation (note no gap)
-                fix_n[ range(tfix, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
-                tfix = sacc_inds[rel_saccs[mm], 1] # next fixation beginning
-            # Put in last (or only) fixation number
-            if tfix < blk_inds[ii, 1]:
-                fix_count += 1
-                fix_n[ range(tfix, blk_inds[ii, 1]) ] = fix_count
-
-        self.fix_n = fix_n
+        self.process_fixations()
 
         ### Construct drift term if relevant
         if self.drift_interval is None:
@@ -393,9 +382,37 @@ class ColorClouds(Dataset):
             if self.Xdrift is not None:
                 self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
 
-    #    self.sacc_ts = torch.tensor(self.sacc_ts, dtype=torch.float32, device=device)
-        #self.eyepos = torch.tensor(self.eyepos.astype('float32'), dtype=self.dtype, device=device)
-        #self.frame_times = torch.tensor(self.frame_times.astype('float32'), dtype=self.dtype, device=device)
+    def process_fixations( self, sacc_in=None ):
+
+        if sacc_in is None:
+            sacc_in = self.sacc_inds[:, 0]
+
+        fix_n = np.zeros(self.NT, dtype=np.int64) 
+        fix_count = 0
+        for ii in range(len(self.block_inds)):
+            # note this will be the inds in each file -- file offset must be added for mult files
+            #self.block_inds.append(np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64))
+
+            # Parse fixation numbers within block
+            rel_saccs = np.where((sacc_in > self.block_inds[ii][0]+6) & (sacc_in < self.block_inds[ii][-1]))[0]
+
+            tfix = self.block_inds[ii][0]  # Beginning of fixation by definition
+            for mm in range(len(rel_saccs)):
+                fix_count += 1
+                # Range goes to beginning of next fixation (note no gap)
+                fix_n[ range(tfix, sacc_in[rel_saccs[mm]]) ] = fix_count
+                tfix = sacc_in[rel_saccs[mm]] + 6
+            # Put in last (or only) fixation number
+            if tfix < self.block_inds[ii][-1]:
+                fix_count += 1
+                fix_n[ range(tfix, self.block_inds[ii][-1]) ] = fix_count
+
+        # Determine whether to be numpy or tensor
+        if isinstance(self.stim, torch.Tensor):
+            self.fix_n = torch.tensor(fix_n, dtype=torch.int64, device=self.stim.device)
+        else:
+            self.fix_n = fix_n
+    # END: ColorClouds.process_fixations()
 
     def avrates( self, inds=None ):
         """
