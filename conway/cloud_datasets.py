@@ -96,8 +96,8 @@ class ColorClouds(Dataset):
 
         # Data to construct and store in memory
         self.fix_n = []
-        self.sacc_on = []
-        self.sacc_off = []
+        #self.sacc_on = []
+        #self.sacc_off = []
         self.used_inds = []
 
         tcount = 0
@@ -159,10 +159,10 @@ class ColorClouds(Dataset):
             sacc_inds[:, 0] += -1  # convert to python so range works
 
             #fix_n = np.zeros(NT, dtype=np.int64)  # each time point labels fixation number
-            sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
-            sacc_on[sacc_inds[:,0]-1] = 1.0
-            sacc_off = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
-            sacc_off[sacc_inds[:,1]-1] = 1.0
+            #sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
+            #sacc_on[sacc_inds[:,0]-1] = 1.0
+            #sacc_off = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
+            #sacc_off[sacc_inds[:,1]-1] = 1.0
 
             valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[:,0]-1  #range(self.NT)  # default -- to be changed at end of init
             
@@ -297,7 +297,7 @@ class ColorClouds(Dataset):
         # Cross-validation setup
         # Develop default train, validation, and test datasets 
         #self.crossval_setup()
-        vblks, trblks = self.fold_sample(len(self.block_inds), 5, random_gen=True)
+        vblks, trblks = self.fold_sample(len(self.block_inds), 5, random_gen=False)
         self.train_inds = []
         for nn in trblks:
             self.train_inds += list(deepcopy(self.block_inds[nn]))
@@ -383,7 +383,8 @@ class ColorClouds(Dataset):
                 self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
 
     def process_fixations( self, sacc_in=None ):
-
+        """Processes fixation informatiom from dataset, but also allows new saccade detection
+        to be input and put in the right format within the dataset (main use)"""
         if sacc_in is None:
             sacc_in = self.sacc_inds[:, 0]
 
@@ -437,6 +438,66 @@ class ColorClouds(Dataset):
             print('Still need to implement avRs without preloading')
             return None
     # END .avrates()
+
+    def shift_stim( 
+        self, pos_shifts, metrics=None, metric_threshold = 1, ts_thresh=10 ):
+        NX = self.dims[1]
+        nlags = self.dims[3]
+        re_stim = deepcopy(self.stim).reshape([-1, NX, NX, nlags])[:,:,:,0]
+        fix_n = np.array(self.fix_n, dtype=np.int64)
+        NF = np.max(fix_n)
+        NTtmp = re_stim.shape[0]
+        
+        #if xyflip:
+        #    sh0 = -(pos_shifts[:,1]-self.dims[2]//2)
+        #    sh1 = -(pos_shifts[:,0]-self.dims[1]//2)
+        #else:
+        sh0 = -(pos_shifts[:,0]-self.dims[1]//2)
+        sh1 = -(pos_shifts[:,1]-self.dims[2]//2)
+
+        sp_stim = deepcopy(re_stim)
+        if metrics is not None:
+            val_fix = metrics > metric_threshold
+            print("  Applied metric threshold: %d/%d"%(np.sum(val_fix), NF))
+        else:
+            val_fix = np.array([True]*NF)
+
+        for ff in range(NF):
+            ts = np.where(fix_n == ff+1)[0]
+            #print(ff, len(ts), ts[0], ts[-1])
+            
+            if (abs(sh0[ff])+abs(sh1[ff]) > 0) & (len(ts) > ts_thresh) & val_fix[ff]:
+
+                # FIRST SP DIM shift
+                sh = int(sh0[ff])
+                stim_seg = re_stim[ts,:,:]
+                if sh > 0:
+                    stim_tmp = torch.zeros([len(ts),NX,NX], dtype=torch.float32)
+                    stim_tmp[:,sh:,:] = deepcopy(stim_seg[:,:(-sh),:])
+                elif sh < 0:
+                    stim_tmp = torch.zeros([len(ts),NX,NX], dtype=torch.float32)
+                    stim_tmp[:,:sh,:] = deepcopy(stim_seg[:,(-sh):,:])
+                else:
+                    stim_tmp = deepcopy(stim_seg)
+
+                # SECOND SP DIM shift
+                sh = int(sh1[ff])
+                if sh > 0:
+                    stim_tmp2 = torch.zeros([len(ts),NX,NX], dtype=torch.float32)
+                    stim_tmp2[:,:,sh:] = deepcopy(stim_tmp[:,:, :(-sh)])
+                elif sh < 0:
+                    stim_tmp2 = torch.zeros([len(ts),NX,NX], dtype=torch.float32)
+                    stim_tmp2[:,:,:sh] = deepcopy(stim_tmp[:,:,(-sh):])
+                else:
+                    stim_tmp2 = deepcopy(stim_tmp)
+                    
+                sp_stim[ts,:,:] = deepcopy(stim_tmp2)
+
+        # Time-embed
+        idx = np.arange(NTtmp)
+        laggedstim = sp_stim[np.arange(NTtmp)[:,None]-np.arange(nlags), :, :]
+        return np.transpose( laggedstim, axes=[0,2,3,1] )
+
 
     def shift_stim_fixation( self, stim, shift):
         """Simple shift by integer (rounded shift) and zero padded. Note that this is not in 
@@ -638,7 +699,15 @@ class ColorClouds(Dataset):
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
 
-        return out                
+        # cushion DFs for number of lags (reducing stim)
+        if (self.num_lags > 0) &  ~utils.is_int(idx):
+            if out['dfs'].shape[0] > self.num_lags:
+                out['dfs'][:self.num_lags, :] = 0.0
+            else: 
+                print( "Warning: requested batch smaller than num_lags %d < %d"%(out['dfs'].shape[0], self.num_lags) )
+     
+        return out
+    # END: CloudDataset.__get_item__
 
     #@property
     #def NT(self):
