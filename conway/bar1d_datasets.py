@@ -112,8 +112,8 @@ class Bar1D(Dataset):
 
         # Data to construct and store in memory
         self.fix_n = []
-        self.sacc_on = []
-        self.sacc_off = []
+        #self.sacc_on = []
+        #self.sacc_off = []
         self.used_inds = []
 
         tcount, fix_count = 0, 0
@@ -160,39 +160,51 @@ class Bar1D(Dataset):
             self.num_units.append(NCfile)
             self.NC += NCfile
 
-            sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
+            self.sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
             fix_n = np.zeros(NT, dtype=np.int64)  # each time point labels fixation number
-            sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
-            sacc_on[sacc_inds[:,0]-1] = 1.0
-            sacc_off = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
-            sacc_off[sacc_inds[:,1]-1] = 1.0
+            #sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
+            #sacc_on[sacc_inds[:,0]-1] = 1.0
+            #sacc_off = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
+            #sacc_off[sacc_inds[:,1]-1] = 1.0
 
             valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[0,:]-1  #range(self.NT)  # default -- to be changed at end of init
 
-            # Got through each block to segment into fixations
-            for nn in range(blk_inds.shape[0]):
+            ### Process blocks and fixations/saccades
+            for ii in range(blk_inds.shape[0]):
                 # note this will be the inds in each file -- file offset must be added for mult files
                 include_block = True
-                ts = np.arange( blk_inds[nn,0]-1, blk_inds[nn,1], dtype=int)
+                ts = np.arange( blk_inds[ii,0]-1, blk_inds[ii,1], dtype=int)
                 if self.eye_config > 0:
                     if np.sum(stim_eyes[ts] == self.eye_config) == 0:
                         include_block = False
                 if include_block:
                     self.block_inds.append(deepcopy(ts))
-                    t0 = blk_inds[nn, 0]-1
+                    #self.block_inds.append( np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64) )
+
+            # Got through each block to segment into fixations
+            #for nn in range(blk_inds.shape[0]):
+            #    # note this will be the inds in each file -- file offset must be added for mult files
+            #    include_block = True
+            #    ts = np.arange( blk_inds[nn,0]-1, blk_inds[nn,1], dtype=int)
+            #    if self.eye_config > 0:
+            #        if np.sum(stim_eyes[ts] == self.eye_config) == 0:
+            #            include_block = False
+            #    if include_block:
+            #        self.block_inds.append(deepcopy(ts))
+            #        t0 = blk_inds[nn, 0]-1
                     #valid_inds[range(t0, t0+num_lags)] = 0  # this already adjusted for?
 
                     # Parse fixation numbers within block
-                    if not ignore_saccades:
-                        rel_saccs = np.where((sacc_inds[:,0] > t0) & (sacc_inds[:,0] < blk_inds[nn,1]))[0]
-                        for mm in range(len(rel_saccs)):
-                            fix_count += 1
-                            fix_n[ range(t0, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
-                            t0 = sacc_inds[rel_saccs[mm], 1]-1
+            #        if not ignore_saccades:
+            #            rel_saccs = np.where((sacc_inds[:,0] > t0) & (sacc_inds[:,0] < blk_inds[nn,1]))[0]
+            #            for mm in range(len(rel_saccs)):
+            #                fix_count += 1
+            #                fix_n[ range(t0, sacc_inds[rel_saccs[mm], 0]) ] = fix_count
+            #                t0 = sacc_inds[rel_saccs[mm], 1]-1
                     # Put in last (or only) fixation number
-                    if t0 < blk_inds[nn, 1]:
-                        fix_count += 1
-                        fix_n[ range(t0, blk_inds[nn, 1]) ] = fix_count
+            #        if t0 < blk_inds[nn, 1]:
+            #            fix_count += 1
+            #            fix_n[ range(t0, blk_inds[nn, 1]) ] = fix_count
             
             tcount += NT
             # make larger fix_n, valid_inds, sacc_inds, block_inds as self
@@ -203,10 +215,10 @@ class Bar1D(Dataset):
         if len(sess_list) > 1:
             print('Warning: currently ignoring multiple files')
         self.used_inds = deepcopy(valid_inds)
-        self.fix_n = deepcopy(fix_n)
-        self.sac_on = deepcopy(sacc_on)
-        self.sac_off = deepcopy(sacc_off)
-        self.sacc_inds = deepcopy(sacc_inds)
+        #self.fix_n = deepcopy(fix_n)
+        #self.sac_on = deepcopy(sacc_on)
+        #self.sac_off = deepcopy(sacc_off)
+        #self.sacc_inds = deepcopy(sacc_inds)
         
         # PULL OTHER INFO
         self.ETtraceHR = np.array(fhandle['ETtrace_raw'], dtype=np.float32)
@@ -315,6 +327,8 @@ class Bar1D(Dataset):
             for bb in range(Nanchors):
                 anchors[bb] = self.block_inds[self.drift_interval*bb][0]
             self.Xdrift = utils.design_matrix_drift( self.NT, anchors, zero_left=False, const_right=True)
+
+            self.process_fixations()
 
             # Convert data to tensors
             #if self.device is not None:
@@ -431,7 +445,7 @@ class Bar1D(Dataset):
                     tmp_stim[:, range(sh)] = deepcopy(self.stimH[:, range(Lc, self.NX)])
 
             self.stimH = deepcopy(tmp_stim)
-    # END .preload_numpy()
+    # END Bar1D.preload_numpy()
         
     def to_tensor(self, device):
         if isinstance(self.stimH, torch.Tensor):
@@ -454,10 +468,40 @@ class Bar1D(Dataset):
             self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
             if self.combine_stim:
                 self.stimC = torch.tensor(self.stimC, dtype=torch.float32, device=device)
+    # END Bar1D.to_tensor
 
-    #    self.sacc_ts = torch.tensor(self.sacc_ts, dtype=torch.float32, device=device)
-        #self.eyepos = torch.tensor(self.eyepos.astype('float32'), dtype=self.dtype, device=device)
-        #self.frame_times = torch.tensor(self.frame_times.astype('float32'), dtype=self.dtype, device=device)
+    def process_fixations( self, sacc_in=None ):
+        """Processes fixation informatiom from dataset, but also allows new saccade detection
+        to be input and put in the right format within the dataset (main use)"""
+        if sacc_in is None:
+            sacc_in = self.sacc_inds[:, 0]
+
+        fix_n = np.zeros(self.NT, dtype=np.int64) 
+        fix_count = 0
+        for ii in range(len(self.block_inds)):
+            # note this will be the inds in each file -- file offset must be added for mult files
+            #self.block_inds.append(np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64))
+
+            # Parse fixation numbers within block
+            rel_saccs = np.where((sacc_in > self.block_inds[ii][0]+6) & (sacc_in < self.block_inds[ii][-1]))[0]
+
+            tfix = self.block_inds[ii][0]  # Beginning of fixation by definition
+            for mm in range(len(rel_saccs)):
+                fix_count += 1
+                # Range goes to beginning of next fixation (note no gap)
+                fix_n[ range(tfix, sacc_in[rel_saccs[mm]]) ] = fix_count
+                tfix = sacc_in[rel_saccs[mm]] + 6
+            # Put in last (or only) fixation number
+            if tfix < self.block_inds[ii][-1]:
+                fix_count += 1
+                fix_n[ range(tfix, self.block_inds[ii][-1]) ] = fix_count
+
+        # Determine whether to be numpy or tensor
+        if isinstance(self.robs, torch.Tensor):
+            self.fix_n = torch.tensor(fix_n, dtype=torch.int64, device=self.robs.device)
+        else:
+            self.fix_n = fix_n
+    # END: Bar1D.process_fixations()
 
     def add_shifter( self, shifts ):
         assert len(shifts == self.NT), "Entered shifts is wrong size."
@@ -743,6 +787,13 @@ class Bar1D(Dataset):
                     dim=1)
 
             out = {'stim': stim, 'stimV': stimV, 'robs': robs, 'dfs': dfs, 'fix_n': self.fix_n[inds]}
+
+        # Augment to eliminate first X time steps in data_filters
+        if (self.num_lags > 0) &  ~utils.is_int(idx):
+            if out['dfs'].shape[0] <= self.num_lags:
+                print( "Warning: fixation shorter than num_lags: %d <= %d"%(out['dfs'].shape[0], self.num_lags))
+            else:
+                out['dfs'][:self.num_lags, :] = 0.0
 
         if self.with_shifter:
             assert self.shifts is not None, "DATASET: shifts missing but 'with_shifter' is true" 
