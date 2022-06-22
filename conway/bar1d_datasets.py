@@ -789,9 +789,9 @@ class Bar1D(Dataset):
             out = {'stim': stim, 'stimV': stimV, 'robs': robs, 'dfs': dfs, 'fix_n': self.fix_n[inds]}
 
         # Augment to eliminate first X time steps in data_filters
-        if self.num_lags > 0:
+        if (self.num_lags > 0) &  ~utils.is_int(idx):
             if out['dfs'].shape[0] <= self.num_lags:
-                print( "Warning: fixation shorter than num_lags")
+                print( "Warning: fixation shorter than num_lags: %d <= %d"%(out['dfs'].shape[0], self.num_lags))
             else:
                 out['dfs'][:self.num_lags, :] = 0.0
 
