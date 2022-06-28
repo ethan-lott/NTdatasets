@@ -176,8 +176,8 @@ class ColorClouds(Dataset):
             print('Warning: currently ignoring multiple files')
         self.used_inds = deepcopy(valid_inds)
         #self.fix_n = deepcopy(fix_n)
-        self.sac_on = deepcopy(sacc_on)
-        self.sac_off = deepcopy(sacc_off)
+        #self.sac_on = deepcopy(sacc_on)
+        #self.sac_off = deepcopy(sacc_off)
         self.sacc_inds = deepcopy(sacc_inds)
         self.LRpresent = LRpresent
 
@@ -218,7 +218,7 @@ class ColorClouds(Dataset):
 
             if time_embed == 2:
                 print("Time embedding...")
-                idx = np.arange(self.NT)
+                #idx = np.arange(self.NT)
                 tmp_stim = self.stim[np.arange(self.NT)[:,None]-np.arange(num_lags), :, :, :]
                 if self.folded_lags:
                     self.stim = np.transpose( tmp_stim, axes=[0,2,1,3,4] ) 
@@ -439,8 +439,8 @@ class ColorClouds(Dataset):
             return None
     # END .avrates()
 
-    def shift_stim( 
-        self, pos_shifts, metrics=None, metric_threshold = 1, ts_thresh=10 ):
+    def shift_stim(self, pos_shifts, metrics=None, metric_threshold = 1, ts_thresh=8 ):
+        """Shift stimulus given standard shifting input (TBD)"""
         NX = self.dims[1]
         nlags = self.dims[3]
         re_stim = deepcopy(self.stim).reshape([-1, NX, NX, nlags])[:,:,:,0]
@@ -465,7 +465,7 @@ class ColorClouds(Dataset):
         for ff in range(NF):
             ts = np.where(fix_n == ff+1)[0]
             #print(ff, len(ts), ts[0], ts[-1])
-            
+
             if (abs(sh0[ff])+abs(sh1[ff]) > 0) & (len(ts) > ts_thresh) & val_fix[ff]:
 
                 # FIRST SP DIM shift
