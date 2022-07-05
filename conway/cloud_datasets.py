@@ -118,8 +118,9 @@ class ColorClouds(Dataset):
             blk_inds = np.array(fhandle['block_inds'], dtype=np.int64)
             blk_inds[:, 0] += -1  # convert to python so range works
 
-            self.channel_map = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)
-            self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)
+            self.channel_mapSU = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)[0, :]
+            self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)[0, :]
+            self.channel_map = np.concatenate((self.channel_mapSU, self.channel_mapMU), axis=0)
             
             NCfile = NSUfile
             if self.include_MUs:
@@ -158,12 +159,6 @@ class ColorClouds(Dataset):
             sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
             sacc_inds[:, 0] += -1  # convert to python so range works
 
-            #fix_n = np.zeros(NT, dtype=np.int64)  # each time point labels fixation number
-            #sacc_on = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
-            #sacc_on[sacc_inds[:,0]-1] = 1.0
-            #sacc_off = np.zeros(NT, dtype=np.float32)  # each time point labels fixation number
-            #sacc_off[sacc_inds[:,1]-1] = 1.0
-
             valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[:,0]-1  #range(self.NT)  # default -- to be changed at end of init
             
             tcount += NT
@@ -175,9 +170,6 @@ class ColorClouds(Dataset):
         if len(sess_list) > 1:
             print('Warning: currently ignoring multiple files')
         self.used_inds = deepcopy(valid_inds)
-        #self.fix_n = deepcopy(fix_n)
-        #self.sac_on = deepcopy(sacc_on)
-        #self.sac_off = deepcopy(sacc_off)
         self.sacc_inds = deepcopy(sacc_inds)
         self.LRpresent = LRpresent
 
@@ -191,7 +183,6 @@ class ColorClouds(Dataset):
     #        self.fix_n[range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])] = nn
         #self.fix_n = list(self.fix_n)  # better list than numpy
 
-        #self.dims = np.unique(np.asarray(self.dims)) # assumes they're all the same    
         if self.eyepos is not None:
             assert len(self.eyepos) == self.num_fixations, \
                 "eyepos input should have %d fixations."%self.num_fixations
@@ -207,25 +198,10 @@ class ColorClouds(Dataset):
                 print('eye-position shifting not implemented yet')
 
             if self.stim_crop is not None:
-                assert len(stim_crop) == 4, "stim_crop must be of form: [x1, x2, y1, y2]"
-                #stim_crop = np.array(stim_crop, dtype=np.int64) # make sure array
-                xs = np.arange(stim_crop[0], stim_crop[1]+1)
-                ys = np.arange(stim_crop[2], stim_crop[3]+1)
-                self.stim = self.stim[:, :, :, ys][:, :, xs, :]
-                print("New stim size: %d x %d"%(len(xs), len(ys)))
-                self.dims[1] = len(xs)
-                self.dims[2] = len(ys)
+                self.crop_stim()
 
             if time_embed == 2:
-                print("Time embedding...")
-                #idx = np.arange(self.NT)
-                tmp_stim = self.stim[np.arange(self.NT)[:,None]-np.arange(num_lags), :, :, :]
-                if self.folded_lags:
-                    self.stim = np.transpose( tmp_stim, axes=[0,2,1,3,4] ) 
-                    print("Folded lags: stim-dim = ", self.stim.shape)
-                else:
-                    self.stim = np.transpose( tmp_stim, axes=[0,2,3,4,1] )
-
+                self.stim = self.time_embedding( self.stim, nlags = num_lags )
             # now stimulus is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
 
             # Flatten stim 
@@ -362,7 +338,7 @@ class ColorClouds(Dataset):
             print( "Adjusting stimulus read from disk: mean | std = %0.3f | %0.3f"%(np.mean(self.stim), np.std(self.stim)))
 
         # once stim loaded from disk, make sure stim is named regular
-        self.stimname = 'stim'
+        #self.stimname = 'stim'
     # END .preload_numpy()
 
     def to_tensor(self, device):
@@ -381,6 +357,75 @@ class ColorClouds(Dataset):
             self.fix_n = torch.tensor(self.fix_n, dtype=torch.int64, device=device)
             if self.Xdrift is not None:
                 self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
+
+    def time_embedding( self, stim=None, nlags=None ):
+        if nlags is None:
+            nlags = self.num_lags
+        if stim is None:
+            tmp_stim = deepcopy(self.stim)
+        else:
+            tmp_stim = deepcopy(stim)
+        if not isinstance(tmp_stim, np.ndarray):
+            tmp_stim = tmp_stim.cpu().numpy()
+    
+        print("Time embedding...")
+        if len(tmp_stim.shape) == 2:
+            print( "Time embed: reshaping stimulus ->", self.dims)
+            tmp_stim = tmp_stim.reshape([NT] + self.dims)
+
+        NT = stim.shape[0]
+        assert self.NT == NT, "TIME EMBEDDING: stim length mismatch"
+
+        tmp_stim = tmp_stim[np.arange(NT)[:,None]-np.arange(nlags), :, :, :]
+        if self.folded_lags:
+            tmp_stim = np.transpose( tmp_stim, axes=[0,2,1,3,4] ) 
+            print("Folded lags: stim-dim = ", self.stim.shape)
+        else:
+            tmp_stim = np.transpose( tmp_stim, axes=[0,2,3,4,1] )
+        return tmp_stim
+    # END .time_embedding()
+
+    def wrap_stim( self, vwrap=0, hwrap=0 ):
+        """Take existing stimulus and move the whole thing around in horizontal and/or vertical dims,
+        including if time_embedded"""
+
+        tmp_stim = deepcopy(self.stim).reshape([self.NT] + self.dims)
+        NY = self.dims[2]
+        if vwrap > 0:
+            self.stim = torch.zeros(tmp_stim.shape, device=tmp_stim.device)
+            self.stim[:, :, :, :vwrap, :] = tmp_stim[:, :, :, (NY-vwrap):, :]
+            self.stim[:, :, :, vwrap:, :] = tmp_stim[:, :, :, :(NY-vwrap), :]
+        elif vwrap < 0:
+            self.stim = torch.zeros(tmp_stim.shape, device=tmp_stim.device)
+            self.stim[:, :, :, (NY-vwrap):, :] = tmp_stim[:, :, :, :vwrap, :]
+            self.stim[:, :, :, :(NY-vwrap), :] = tmp_stim[:, :, :, vwrap:, :]
+        
+        if hwrap != 0:
+            print("Horizontal wraps not implemented yet, since they are probably useless.")
+
+        self.stim = self.stim.reshape( [self.NT, -1] )
+    # END .stim_wrap()
+
+    def crop_stim( self, stim_crop=None ):
+        """Crop stimulus and change relevant variables"""
+        if stim_crop is None:
+            stim_crop = self.stim_crop
+        else:
+            self.stim_crop = stim_crop 
+        assert len(stim_crop) == 4, "stim_crop must be of form: [x1, x2, y1, y2]"
+
+        if len(self.stim.shape) != 5:
+            self.stim = self.stim.reshape([self.NT] + self.dims)
+            #print('  CROP: reshaping stim')
+        #stim_crop = np.array(stim_crop, dtype=np.int64) # make sure array
+        xs = np.arange(stim_crop[0], stim_crop[1]+1)
+        ys = np.arange(stim_crop[2], stim_crop[3]+1)
+        self.stim = self.stim[:, :, :, ys, :][:, :, xs, :, :]
+        print("  CROP: New stim size: %d x %d"%(len(xs), len(ys)))
+        self.dims[1] = len(xs)
+        self.dims[2] = len(ys)
+        self.stim = self.stim.reshape([self.NT, -1])
+    # END .crop_stim()
 
     def process_fixations( self, sacc_in=None ):
         """Processes fixation informatiom from dataset, but also allows new saccade detection
