@@ -744,12 +744,13 @@ class ColorClouds(Dataset):
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
 
+        ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)
-        if (self.num_lags > 0) &  ~utils.is_int(idx):
-            if out['dfs'].shape[0] > self.num_lags:
-                out['dfs'][:self.num_lags, :] = 0.0
-            else: 
-                print( "Warning: requested batch smaller than num_lags %d < %d"%(out['dfs'].shape[0], self.num_lags) )
+        #if (self.num_lags > 0) &  ~utils.is_int(idx):
+        #    if out['dfs'].shape[0] > self.num_lags:
+        #        out['dfs'][:self.num_lags, :] = 0.0
+        #    else: 
+        #        print( "Warning: requested batch smaller than num_lags %d < %d"%(out['dfs'].shape[0], self.num_lags) )
      
         return out
     # END: CloudDataset.__get_item__
