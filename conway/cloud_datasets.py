@@ -135,25 +135,25 @@ class ColorClouds(Dataset):
             self.block_filemapping += list(np.ones(blk_inds.shape[0], dtype=int)*fnum)
             self.num_blks[fnum]= blk_inds.shape[0]
 
-            #if self.stim_dims is None:
-            #if folded_lags:
-            self.dims = list(fhandle['stim'].shape[1:4]) + [1]
-            #else:
-            #    self.dims = list(fhandle[stimname].shape[1:4]) + [1]
+            self.dims = list(fhandle['stim'].shape[1:4])  # this is basis of data (stimLP and stimET)
+            self.stim_dims = None  # # when stim is constructed
 
             """ EYE configuration """
-            if self.eye_config > 0:
-                Lpresent = np.array(fhandle['useLeye'], dtype=int)[:,0]
-                Rpresent = np.array(fhandle['useReye'], dtype=int)[:,0]
-                LRpresent = Lpresent + 2*Rpresent
+            #if self.eye_config > 0:
+            Lpresent = np.array(fhandle['useLeye'], dtype=int)[:,0]
+            Rpresent = np.array(fhandle['useReye'], dtype=int)[:,0]
+            LRpresent = Lpresent + 2*Rpresent
 
             if luminance_only:
                 if self.dims[0] > 1:
                     print("Reducing stimulus channels (%d) to first dimension"%self.dims[0])
                 self.dims[0] = 1
-            
-            if self.time_embed > 0:
-                self.dims[3] = self.num_lags
+
+            if self.binocular:
+                self.dims[0] *= 2
+
+            #if self.time_embed > 0:
+            #    self.dims[3] = self.num_lags
 
             #print('Stim check:', folded_lags, self.dims)
 
@@ -178,19 +178,9 @@ class ColorClouds(Dataset):
         self.sacc_inds = deepcopy(sacc_inds)
         self.LRpresent = LRpresent
 
-        # Go through saccades to establish val_indices and produce saccade timing vector 
-        # Note that sacc_ts will be generated even without preload -- small enough that doesnt matter
-    #    self.sacc_ts = np.zeros([self.NT, 1], dtype=np.float32)
-    #    self.fix_n = np.zeros(self.NT, dtype=np.int64)  # label of which fixation is in each range
-    #    for nn in range(self.num_fixations):
-    #        print(nn, self.sacc_inds[nn][0], self.sacc_inds[nn][1] )
-    #        self.sacc_ts[self.sacc_inds[nn][0]] = 1 
-    #        self.fix_n[range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])] = nn
-        #self.fix_n = list(self.fix_n)  # better list than numpy
-
-        #if self.eyepos is not None:
-        #    assert len(self.eyepos) == self.num_fixations, \
-        #        "eyepos input should have %d fixations."%self.num_fixations
+        # Make binocular gain term
+        self.binocular_gain = torch.zeros( len(LRpresent), dtype=torch.float32 )
+        self.binocular_gain[self.LRpresent == 3] = 1.0
 
         if preload:
             print("Loading data into memory...")
@@ -235,6 +225,7 @@ class ColorClouds(Dataset):
             self.robs = self.robs[ts, :]
             self.dfs = self.dfs[ts, :]
             self.LRpresent = self.LRpresent[ts]
+            self.binocular_gain = self.binocular_gain[ts]
 
             self.NT = len(ts)
 
@@ -298,6 +289,7 @@ class ColorClouds(Dataset):
         else:
             self.stimET = None
             print('Missing ETstimulus')
+
         self.robs = np.zeros( [NT, self.NC], dtype=np.float32)
         self.dfs = np.ones( [NT, self.NC], dtype=np.float32)
         #self.eyepos = np.zeros([NT, 2], dtype=np.float32)
@@ -309,18 +301,49 @@ class ColorClouds(Dataset):
             
             fhandle = self.fhandles[ee]
             sz = fhandle['stim'].shape
-            inds = range(t_counter, t_counter+sz[0])
+            inds = np.arange(t_counter, t_counter+sz[0], dtype=np.int64)
             #inds = self.stim_indices[expt][stim]['inds']
             #self.stim[inds, ...] = np.transpose( np.array(fhandle[self.stimname], dtype=np.float32), axes=[0,3,1,2])
-            if self.luminance_only:
-                self.stimLP[inds, 0, ...] = np.array(fhandle['stim'], dtype=np.float32)[:, 0, ...]
-                if self.stimET is not None:
-                    print(np.array(fhandle['stimET'], dtype=np.float32).shape, self.stimET[inds, 0, ...].shape)
-                    self.stimET[inds, 0, ...] = np.array(fhandle['stimET'], dtype=np.float32)[:, 0, ...]
-            else:
-                self.stimLP[inds, ...] = np.array(fhandle['stim'], dtype=np.float32)
-                if self.stimET is not None:
-                    self.stimET[inds, ...] = np.array(fhandle['stimET'], dtype=np.float32)
+            if self.binocular:
+                Leye = inds[self.LRpresent[inds] != 2]
+                Reye = inds[self.LRpresent[inds] != 1]
+                #Leye = inds[np.where(self.LRpresent[inds] != 2)[0]]
+                #Reye = inds[np.where(self.LRpresent[inds] != 1)[0]]
+                #print(len(Leye), len(Reye))
+                if self.luminance_only:
+                    self.stimLP[Leye, 0, ...] = np.array(fhandle['stim'], dtype=np.float32)[Leye, 0, ...]
+                    self.stimLP[Reye, 1, ...] = np.array(fhandle['stim'], dtype=np.float32)[Reye, 0, ...]
+                    if self.stimET is not None:
+                        self.stimET[Leye, 0, ...] = np.array(fhandle['stimET'], dtype=np.float32)[Leye, 0, ...]
+                        self.stimET[Reye, 1, ...] = np.array(fhandle['stimET'], dtype=np.float32)[Reye, 0, ...]
+                else:
+                    stim_tmp = deepcopy(self.stimLP[:, :3, ...])
+                    stim_tmp[Leye, ...] = np.array(fhandle['stim'], dtype=np.float32)[Leye, ...]
+                    self.stimLP[:, np.arange(3), ...] = deepcopy(stim_tmp) # this might not be necessary
+                    stim_tmp = deepcopy(self.stimLP[:, 3:, ...])
+                    stim_tmp[Reye, ...] = np.array(fhandle['stim'], dtype=np.float32)[Reye, ...]
+                    self.stimLP[:, np.arange(3,6), ...] = deepcopy(stim_tmp) # this might not be necessary
+
+                    if self.stimET is not None:
+                        stim_tmp = deepcopy(self.stimET[:, :3, ...])
+                        stim_tmp[Leye, ...] = np.array(fhandle['stimET'], dtype=np.float32)[Leye, ...]
+                        self.stimET[:, np.arange(3), ...] = deepcopy(stim_tmp) # this might not be necessary
+                        stim_tmp = deepcopy(self.stimET[:, 3:, ...])
+                        stim_tmp[Reye, ...] = np.array(fhandle['stimET'], dtype=np.float32)[Reye, ...]
+                        self.stimET[:, np.arange(3,6), ...] = deepcopy(stim_tmp) # this might not be necessary
+                        #self.stimET[Leye, np.arange(3), ...] = np.array(fhandle['stimET'], dtype=np.float32)[Leye, ...]
+                        #self.stimET[Reye, np.arange(3,6), ...] = np.array(fhandle['stimET'], dtype=np.float32)[Reye, ...]
+                        
+            else:  # Monocular
+                if self.luminance_only:
+                    self.stimLP[inds, 0, ...] = np.array(fhandle['stim'], dtype=np.float32)[:, 0, ...]
+                    if self.stimET is not None:
+                        print(np.array(fhandle['stimET'], dtype=np.float32).shape, self.stimET[inds, 0, ...].shape)
+                        self.stimET[inds, 0, ...] = np.array(fhandle['stimET'], dtype=np.float32)[:, 0, ...]
+                else:
+                    self.stimLP[inds, ...] = np.array(fhandle['stim'], dtype=np.float32)
+                    if self.stimET is not None:
+                        self.stimET[inds, ...] = np.array(fhandle['stimET'], dtype=np.float32)
 
             """ Robs and DATAFILTERS"""
             robs_tmp = np.zeros( [len(inds), self.NC], dtype=np.float32 )
@@ -382,8 +405,10 @@ class ColorClouds(Dataset):
         if self.stim is not None:
             del self.stim
             torch.cuda.empty_cache()
+        num_clr = self.dims[0]
 
         if which_stim is not None:
+            L = self.dims[1]
             if not isinstance(which_stim, int):
                 if which_stim in ['ET', 'et', 'stimET']:
                     which_stim=0
@@ -405,8 +430,7 @@ class ColorClouds(Dataset):
                 self.stim_pos = top_corner
             else:
                 self.stim_pos = [top_corner[0], top_corner[1], top_corner[0]+L, top_corner[1]+L]
-            newstim = np.zeros([self.NT] + self.dims[:3])
-            num_clr = self.dims[0]
+            newstim = np.zeros( [self.NT, num_clr, L, L] )
             OVLP = self.rectangle_overlap_ranges(self.stim_pos, self.stim_location)
             if OVLP is not None:
                 print("  Writing lam stim: overlap %d, %d"%(len(OVLP['targetX']), len(OVLP['targetY'])))
@@ -426,10 +450,9 @@ class ColorClouds(Dataset):
             self.stim = torch.tensor( newstim, dtype=torch.float32, device=self.device )
 
         self.num_lags = num_lags
+        self.stim_dims = [self.dims[0], L, L, 1]
         #print('Stim shape', self.stim.shape)
         # Note stim stored in numpy is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
-        if time_embed is not None:
-            self.time_embed = time_embed
 
         self.stim_shifts = shifts
         if self.stim_shifts is not None:
@@ -450,7 +473,7 @@ class ColorClouds(Dataset):
                     np.minimum(self.fix_location[dd]+self.fix_size+1, self.stim_pos[dd+2])-self.stim_pos[dd] 
                     ).astype(int)
             # Write the correct value to stim
-            print(fixranges)
+            #print(fixranges)
             assert fixdot == 0, "Haven't yet put in other fixdot settings than zero" 
             #strip = deepcopy(self.stim[:, :, fixranges[0], :])
             #strip[:, :, :, fixranges[1]] = 0
@@ -458,8 +481,12 @@ class ColorClouds(Dataset):
             for xx in fixranges[0]:
                 self.stim[:, :, xx, fixranges[1]] = 0
 
-        if time_embed == 2:
-            self.stim = self.time_embedding( self.stim, nlags = num_lags )
+        if time_embed is not None:
+            self.time_embed = time_embed
+        if time_embed > 0:
+            #self.stim_dims[3] = num_lags  # this is set by time-embedding
+            if time_embed == 2:
+                self.stim = self.time_embedding( self.stim, nlags = num_lags )
         # now stimulus is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
 
         # Flatten stim 
@@ -517,8 +544,11 @@ class ColorClouds(Dataset):
                 self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
 
     def time_embedding( self, stim=None, nlags=None ):
+        assert self.stim_dims is not None, "Need to assemble stim before time-embedding."
         if nlags is None:
             nlags = self.num_lags
+        if self.stim_dims[3] == 1:
+            self.stim_dims[3] = nlags
         if stim is None:
             tmp_stim = deepcopy(self.stim)
         else:
@@ -529,10 +559,10 @@ class ColorClouds(Dataset):
         #if not isinstance(tmp_stim, np.ndarray):
         #    tmp_stim = tmp_stim.cpu().numpy()
     
-        print("Time embedding...")
+        print("  Time embedding...")
         if len(tmp_stim.shape) == 2:
-            print( "Time embed: reshaping stimulus ->", self.dims)
-            tmp_stim = tmp_stim.reshape([NT] + self.dims)
+            print( "Time embed: reshaping stimulus ->", self.stim_dims)
+            tmp_stim = tmp_stim.reshape([NT] + self.stim_dims)
 
         NT = stim.shape[0]
         assert self.NT == NT, "TIME EMBEDDING: stim length mismatch"
@@ -553,7 +583,7 @@ class ColorClouds(Dataset):
         including if time_embedded"""
 
         tmp_stim = deepcopy(self.stim).reshape([self.NT] + self.dims)
-        NY = self.dims[2]
+        NY = self.stim_dims[2]
         if vwrap > 0:
             self.stim = torch.zeros(tmp_stim.shape, device=tmp_stim.device)
             self.stim[:, :, :, :vwrap, :] = tmp_stim[:, :, :, (NY-vwrap):, :]
@@ -577,9 +607,9 @@ class ColorClouds(Dataset):
             self.stim_crop = stim_crop 
         assert len(stim_crop) == 4, "stim_crop must be of form: [x1, x2, y1, y2]"
 
-        print(self.stim.shape, self.dims)
+        print(self.stim.shape, self.dims, self.stim_dims)
         if len(self.stim.shape) == 2:
-            self.stim = self.stim.reshape([self.NT] + self.dims)
+            self.stim = self.stim.reshape([self.NT] + self.stim_dims)
             reshape=True
             #print('  CROP: reshaping stim')
         else:
@@ -593,8 +623,8 @@ class ColorClouds(Dataset):
             self.stim = self.stim[:, :, :, ys, :][:, :, xs, :, :]
 
         print("  CROP: New stim size: %d x %d"%(len(xs), len(ys)))
-        self.dims[1] = len(xs)
-        self.dims[2] = len(ys)
+        self.stim_dims[1] = len(xs)
+        self.stim_dims[2] = len(ys)
         if reshape:
             self.stim = self.stim.reshape([self.NT, -1])
     # END .crop_stim()
@@ -657,7 +687,7 @@ class ColorClouds(Dataset):
         y0 = np.minimum( np.min(lamloc[1,:]), np.min(ETlocs[1,:]) )
         y1 = np.maximum( np.max(lamloc[3,:]), np.max(ETlocs[3,:]) )
         #print(x0,x1,y0,y1)
-        ax.add_patch(Rectangle((lamloc[0], lamloc[1]), 60, 60, edgecolor='red', facecolor='none', linewidth=1))
+        ax.add_patch(Rectangle((lamloc[0], lamloc[1]), 60, 60, edgecolor='red', facecolor='none', linewidth=1.5))
         clrs = ['blue', 'green', 'purple']
         for ii in range(nET):
             ax.add_patch(Rectangle((ETlocs[0,ii], ETlocs[1,ii]), 60, 60, 
@@ -701,12 +731,12 @@ class ColorClouds(Dataset):
 
     def shift_stim(self, pos_shifts, metrics=None, metric_threshold = 1, ts_thresh=8, already_lagged=True ):
         """Shift stimulus given standard shifting input (TBD)"""
-        NX = self.dims[1]
-        nlags = self.dims[3]
+        NX = self.stim_dims[1]
+        nlags = self.stim_dims[3]
         # Check if has been time-lagged yet
   
         if already_lagged:
-            re_stim = deepcopy(self.stim).reshape([-1] + self.dims)[..., 0]
+            re_stim = deepcopy(self.stim).reshape([-1] + self.stim_dims)[..., 0]
         else:
             assert len(self.stim) > 2, "Should be already lagged, but seems not"
             re_stim = deepcopy(self.stim)            
@@ -714,7 +744,7 @@ class ColorClouds(Dataset):
         fix_n = np.array(self.fix_n, dtype=np.int64)
         NF = np.max(fix_n)
         NTtmp = re_stim.shape[0]
-        nclr = self.dims[0]
+        nclr = self.stim_dims[0]
         #sh0 = -(pos_shifts[:,0]-self.dims[1]//2)
         #sh1 = -(pos_shifts[:,1]-self.dims[2]//2)
         sh0 = pos_shifts[:, 0]  # this should be in units of pixels relative to 0
@@ -935,14 +965,14 @@ class ColorClouds(Dataset):
             stim = []
             robs = []
             dfs = []
-            num_dims = self.dims[0]*self.dims[1]*self.dims[2]
+            num_dims = self.stim_dims[0]*self.stim_dims[1]*self.stim_dims[2]
 
             """ Stim """
             # need file handle
             f = 0
             #f = self.file_index[inds]  # problem is this could span across several files
 
-            stim = torch.tensor(self.fhandles[f][stimname][inds,:], dtype=torch.float32)
+            stim = torch.tensor(self.fhandles[f]['stim'][inds,:], dtype=torch.float32)
             # reshape and flatten stim: currently its NT x NX x NY x Nclrs
             stim = stim.permute([0,3,1,2]).reshape([-1, num_dims])
                 
@@ -965,7 +995,9 @@ class ColorClouds(Dataset):
         # Addition whether-or-not preloaded
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
-
+        if self.binocular:
+            out['binocular'] = self.binocular_gain[idx]
+            
         ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)
         #if (self.num_lags > 0) &  ~utils.is_int(idx):
