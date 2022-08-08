@@ -10,11 +10,21 @@ from copy import deepcopy
 import h5py
 
 class SensoryBase(Dataset):
-    """Parent class meant to hold standard variables and functions used by general
-    sensory datasets"""
+    """Parent class meant to hold standard variables and functions used by general sensory datasets
+    
+    General consistent formatting:
+    -- self.robs, dfs, and any design matrices are generated as torch vectors on device
+    -- stimuli are imported separately as dataset-specific numpy arrays, and but then prepared into 
+        self.stim (tensor) by a function self.prepare_stim, which must be overloaded
+    -- self.stim_dims gives the dimension of self.stim in 4-dimensional format
+    -- all tensors are stored on default device (cpu)
+
+    General book-keeping variables
+    -- self.block_inds is empty but must be filled in by specific datasets
+    """
 
     def __init__(self,
-        filename_list,
+        filenames, # this could be single filename or list of filenames, to be processed in specific way
         datadir, 
         # Stim setuup
         num_lags=10,
@@ -29,10 +39,11 @@ class SensoryBase(Dataset):
         """Constructor options"""
 
         self.datadir = datadir
-        self.sess_list = filename_list
+        self.filenames = filenames
         self.device = device
         
         self.num_lags = num_lags
+        self.stim_dims = None
         self.time_embed = time_embed
         self.preload = preload
         self.drift_interval = drift_interval
@@ -61,27 +72,137 @@ class SensoryBase(Dataset):
         self.robs = []
         self.NT = 0
     
-        # General file i/o
-        self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
-
+        # General file i/o -- this is not general, so taking out
+        #self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
+            
     # END SensoryBase.__init__
 
-    def construct_drift_design_matrix( self, anchors=None):
-        """Note this uses self.block_inds currently"""
+    def prepare_stim( self ):
+        print('Default prepare stimulus method.')
 
-        assert anchors is None, "Haven't implemented external anchor handling yet"
+    def time_embedding( self, stim=None, nlags=None ):
+        """Assume all stim dimensions are flattened into single dimension. 
+        Will only act on self.stim if 'stim' argument is left None"""
 
-        if self.drift_interval is None:
-            self.Xdrift = None
+        assert self.stim_dims is not None, "Need to assemble stim before time-embedding."
+        if nlags is None:
+            nlags = self.num_lags
+        if self.stim_dims[3] == 1:
+            self.stim_dims[3] = nlags
+        if stim is None:
+            tmp_stim = deepcopy(self.stim)
         else:
-            assert self.block_inds is not None, "Need to specify block_inds (currently)"
-            NBL = len(self.block_inds)
-            Nanchors = np.ceil(NBL/self.drift_interval).astype(int)
-            anchors = np.zeros(Nanchors, dtype=np.int64)
-            for bb in range(Nanchors):
-                anchors[bb] = self.block_inds[self.drift_interval*bb][0]
-            self.Xdrift = utils.design_matrix_drift( self.NT, anchors, zero_left=False, const_right=True)
+            if isinstance(stim, np.ndarray):
+                tmp_stim = torch.tensor( stim, dtype=torch.float32)
+            else:
+                tmp_stim = deepcopy(stim)
+        #if not isinstance(tmp_stim, np.ndarray):
+        #    tmp_stim = tmp_stim.cpu().numpy()
+ 
+        NT = stim.shape[0]
+        original_dims = None
+        if len(tmp_stim.shape) != 2:
+            original_dims = tmp_stim.shape
+            print( "Time embed: flattening stimulus from", original_dims)
+        tmp_stim = tmp_stim.reshape([NT, -1])  # automatically generates 2-dimensional stim
+
+        assert self.NT == NT, "TIME EMBEDDING: stim length mismatch"
+
+        # Actual time-embedding itself
+        tmp_stim = tmp_stim[np.arange(NT)[:,None]-np.arange(nlags), :]
+        tmp_stim = torch.permute( tmp_stim, (0,2,1) ).reshape([NT, -1])
+
+        return tmp_stim
+    # END SensoryBase.time_embedding()
+
+    def construct_drift_design_matrix( self, block_anchors=None):
+        """Note this requires self.block_inds, and either uses self.drift_interval or block_anchors"""
+
+        assert self.block_inds is not None, "Need block_inds defined as an internal variable"
+        NBL = len(self.block_inds)
+
+        if block_anchors is None:
+            if self.drift_interval is None:
+                self.Xdrift = None
+                return
+            block_anchors = np.arange(0, NBL, self.drift_interval)
+
+        Nanchors = len(block_anchors)
+        anchors = np.zeros(Nanchors, dtype=np.int64)
+        for bb in range(Nanchors):
+            anchors[bb] = self.block_inds[block_anchors[bb]][0]
+        
+        self.anchors = anchors
+        self.Xdrift = torch.tensor( 
+            self.design_matrix_drift( self.NT, anchors, zero_left=False, const_right=True),
+            dtype=torch.float32)
     # END SenspryBase.construct_drift_design_matrix()
+
+    @staticmethod
+    def design_matrix_drift( NT, anchors, zero_left=True, zero_right=False, const_right=False, to_plot=False):
+        """Produce a design matrix based on continuous data (s) and anchor points for a tent_basis.
+        Here s is a continuous variable (e.g., a stimulus) that is function of time -- single dimension --
+        and this will generate apply a tent basis set to s with a basis variable for each anchor point. 
+        The end anchor points will be one-sided, but these can be dropped by changing "zero_left" and/or
+        "zero_right" into "True".
+
+        Inputs: 
+            NT: length of design matrix
+            anchors: list or array of anchor points for tent-basis set
+            zero_left, zero_right: boolean whether to drop the edge bases (default for both is False)
+        Outputs:
+            X: design matrix that will be NT x the number of anchors left after zeroing out left and right
+        """
+        anchors = list(anchors)
+        if anchors[0] > 0:
+            anchors = [0] + anchors
+        #if anchors[-1] < NT:
+        #    anchors = anchors + [NT]
+        NA = len(anchors)
+
+        X = np.zeros([NT, NA])
+        for aa in range(NA):
+            if aa > 0:
+                dx = anchors[aa]-anchors[aa-1]
+                X[range(anchors[aa-1], anchors[aa]), aa] = np.arange(dx)/dx
+            if aa < NA-1:
+                dx = anchors[aa+1]-anchors[aa]
+                X[range(anchors[aa], anchors[aa+1]), aa] = 1-np.arange(dx)/dx
+
+        if zero_left:
+            X = X[:, 1:]
+
+        if const_right:
+            X[range(anchors[-1], NT), -1] = 1.0
+
+        if zero_right:
+            X = X[:, :-1]
+
+        if to_plot:
+            plt.imshow(X.T, aspect='auto', interpolation='none')
+            plt.show()
+
+        return X
+
+    @staticmethod
+    def construct_onehot_design_matrix( stim=None, return_categories=False ):
+        """the stimulus should be numpy -- not meant to be used with torch currently"""
+        assert stim is not None, "Must pass in stimulus"
+        assert len(stim.shape) < 3, "Stimulus must be one-dimensional"
+        assert isinstance( stim, np.ndarray ), "stim must be a numpy array"
+
+        category_list = np.unique(stim)
+        NSTIM = len(category_list)
+        assert NSTIM < 50, "Must have less than 50 classifications in one-hot: something wrong?"
+        OHmatrix = np.zeros([stim.shape[0], NSTIM], dtype=np.float32)
+        for ss in range(NSTIM):
+            OHmatrix[stim == category_list[ss], ss] = 1.0
+        
+        if return_categories:
+            return OHmatrix, category_list
+        else:
+            return OHmatrix
+    # END staticmethod.construct_onehot_design_matrix()
 
     def avrates( self, inds=None ):
         """
@@ -207,4 +328,6 @@ class SensoryBase(Dataset):
 
     def __getitem__(self, idx):
         return {}
-    
+
+    def __len__(self):
+        return self.robs.shape[0]
