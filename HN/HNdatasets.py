@@ -133,6 +133,11 @@ class HNdataset(SensoryBase):
         else:
             stim = torch.tensor( self.stimR, dtype=torch.float32 )
 
+        # Zero out invalid time points (disp=0) before time embedding
+        df_generic = torch.zeros( stim.shape, dtype=torch.float32 )
+        df_generic[self.used_inds, :] = 1.0
+        stim = stim * df_generic
+        
         self.stim_dims = [1, stim.shape[1], 1, 1]  # Put one-hot on first spatial dimension
 
         if num_lags is None:

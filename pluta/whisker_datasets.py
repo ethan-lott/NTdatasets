@@ -67,6 +67,9 @@ class WhiskerData(SensoryBase):
         for tr in Xtr:
             Xi = np.concatenate( (Xi, self.block_inds[tr]), axis=0)
 
+        self.train_inds = Ui
+        self.val_inds = Xi
+
         ##### Additional Stim processing #####
         self.touches = np.zeros([NT, 4])
         for ww in range(4):
@@ -96,7 +99,7 @@ class WhiskerData(SensoryBase):
         if num_lags is None:
             num_lags = self.num_lags
 
-        self.stim_dims = [2, 1, 1, 1]
+        self.stim_dims = [1, 2, 1, 1]
         if stim_config == 0:
             self.stim = self.time_embedding( stim=self.touches[:, :2], nlags=num_lags )
             self.stimA = self.time_embedding( stim=self.touches[:, 2:], nlags=num_lags )
@@ -104,7 +107,7 @@ class WhiskerData(SensoryBase):
             self.stimA = self.time_embedding( stim=self.touches[:, :2], nlags=num_lags )
             self.stim = self.time_embedding( stim=self.touches[:, 2:], nlags=num_lags )
         else:
-            self.stim_dims = [4, 1, 1, 1]
+            self.stim_dims = [1, 4, 1, 1]
             self.stim = self.time_embedding( stim=self.touches, nlags=num_lags )
             self.stimA = None
     # END WhiskerData.prepare_stim()
@@ -139,7 +142,7 @@ class WhiskerData(SensoryBase):
                 'dfs': dfs_tmp[idx, :]}
             
         if self.stimA is not None:
-            out['stimA'] = stimA[idx, :]
+            out['stimA'] = self.stimA[idx, :]
 
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
@@ -188,6 +191,8 @@ class WhiskerData(SensoryBase):
                                 borderL=None, borderR=None, anchorL=True, rightskip=False):
         """Make design matrix of certain number of bins that maps variable of interest
         anchorL is so there is not an overall bias fit implicitly"""
+        from NDNT.utils.NDNutils import design_matrix_tent_basis
+
         NT = x.shape[0]
         if val_inds is None:
             val_inds = range(NT)    
@@ -212,7 +217,7 @@ class WhiskerData(SensoryBase):
         else:
             bins = np.arange(num_bins+1)*(borderR-borderL)/num_bins + borderL
         print(bins)
-        XNL = NDNutils.design_matrix_tent_basis( x, bins, zero_left=anchorL )
+        XNL = design_matrix_tent_basis( x, bins, zero_left=anchorL )
         return XNL
 
     @staticmethod
