@@ -39,7 +39,7 @@ class HNdataset(SensoryBase):
         self.NT, self.NC = self.robs.shape
         # Make datafilters
         self.dfs = torch.zeros( [self.NT, self.NC], dtype=torch.float32 )
-        self.used_inds = matdat['used_inds'][:,0] - 1
+        self.used_inds = matdat['used_inds'][:,0].astype(np.int64) - 1
         self.dfs[self.used_inds, :] = 1.0
         #modvars = matdat['moduvar']
 
@@ -57,6 +57,8 @@ class HNdataset(SensoryBase):
         self.Nframes = np.min(np.diff(blks))
         for bb in range(self.Ntr):
             self.block_inds.append( np.arange(blks[bb,0]-1, blks[bb,1], dtype=np.int64) )
+            # Take out the first num_lags part of each data-filter
+            self.dfs[np.arange(blks[bb,0]-1, blks[bb,0]+np.maximum(20,self.num_lags+1)), :] = 0.0
 
         self.CHnames = [None]*self.NC
         for cc in range(self.NC):
@@ -107,6 +109,12 @@ class HNdataset(SensoryBase):
         self.Utr = {'all':Ut, '0':Ut0, 'c':UtC, 'u':UtU, '0c':Ut0C, '0u':Ut0U}
         self.Xtr = {'all':Xt, '0':Xt0, 'c':XtC, 'u':XtU, '0c':Xt0C, '0u':Xt0U}
 
+        self.train_inds, self.val_inds = [], []
+        for tr in Ut:
+            self.train_inds = np.concatenate( (self.train_inds, self.block_inds[tr]), axis=0 )
+        for tr in Xt:
+            self.val_inds = np.concatenate( (self.val_inds, self.block_inds[tr]), axis=0 )
+
         # Additional processing check
         # Cued and uncued stim
         #Cstim = np.multiply(TRstim[:,1], np.sign(TRstim[:,0])) # Cued stim
@@ -123,7 +131,7 @@ class HNdataset(SensoryBase):
 
         # Make drift-design matrix using anchor points at each cycle
         cued_transitions = np.where(abs(np.diff(self.TRcued)) > 0)[0]
-        anchors = [0] + list(cued_transitions[range(1,len(cued_transitions)+1, 2)])
+        anchors = [0] + list(cued_transitions[range(1,len(cued_transitions), 2)])
         self.construct_drift_design_matrix(block_anchors = anchors) 
     # END HNdata.__init__()
 
