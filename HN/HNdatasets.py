@@ -111,9 +111,11 @@ class HNdataset(SensoryBase):
 
         self.train_inds, self.val_inds = [], []
         for tr in Ut:
-            self.train_inds = np.concatenate( (self.train_inds, self.block_inds[tr]), axis=0 )
+            self.train_inds = np.concatenate( 
+                (self.train_inds, self.block_inds[tr]), axis=0 ).astype(np.int64)
         for tr in Xt:
-            self.val_inds = np.concatenate( (self.val_inds, self.block_inds[tr]), axis=0 )
+            self.val_inds = np.concatenate( 
+                (self.val_inds, self.block_inds[tr]), axis=0 ).astype(np.int64)
 
         # Additional processing check
         # Cued and uncued stim

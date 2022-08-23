@@ -72,10 +72,35 @@ class SensoryBase(Dataset):
         self.robs = []
         self.NT = 0
     
+        # Additional covariate list
+        self.covariates = {}
+        self.cov_dims = {}
         # General file i/o -- this is not general, so taking out
         #self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
             
     # END SensoryBase.__init__
+
+    def add_covariate( self, cov_name=None, cov=None ):
+        assert cov_name is not None, "Need cov_name"
+        assert cov is not None, "Missing cov"
+        if len(cov.shape > 2):
+            dims = cov.shape[1:]
+            if len(dims) < 4:
+                dims = np.concatenate( (dims, np.ones(4-len(dims))), axis=0 )
+            cov = cov.reshape([-1, np.prod(dims)])
+        else:
+            dims = [1, cov.shape[1], 1, 1]
+        [NT, Ndims] = cov.shape
+        assert self.NT == NT, "Wrong number of time points"
+        self.covariates[cov_name] = deepcopy(cov)
+        self.cov_dims = dims
+    # END SensoryBase.add_covariate()
+
+    def append_covariates( self, out, idx ):
+        """Complements __get_item__ to add covariates to existing dictionary"""
+        for cov_name, cov in self.covariates.items():
+            out[cov_name] = cov[idx, :]
+        # Return out, or not?
 
     def prepare_stim( self ):
         print('Default prepare stimulus method.')
