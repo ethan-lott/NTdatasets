@@ -187,7 +187,7 @@ class ColorClouds(Dataset):
             self.preload_numpy()
 
             if which_stim is not None:
-                assert num_lags is not None, "Need to specify num_lags and other stim params"
+                #assert num_lags is not None, "Need to specify num_lags and other stim params"
                 self.assemble_stimulus( which_stim=which_stim, 
                     time_embed=time_embed, num_lags=num_lags, stim_crop=stim_crop )
 
@@ -393,7 +393,7 @@ class ColorClouds(Dataset):
         which_stim=None, stim_wrap=None, stim_crop=None, # conventional stim: ET=0, lam=1,
         top_corner=None, L=60,  # position of stim
         time_embed=None, num_lags=10,
-        shifts=None,
+        shifts=None, BUF=20, # shift buffer
         fixdot=0 ):
         """This assembles a stimulus from the raw numpy-stored stimuli into self.stim
         which_stim: determines what stimulus is assembled from 'ET'=0, 'lam'=1, None
@@ -406,6 +406,7 @@ class ColorClouds(Dataset):
             del self.stim
             torch.cuda.empty_cache()
         num_clr = self.dims[0]
+        need2crop = False
 
         if which_stim is not None:
             L = self.dims[1]
@@ -428,8 +429,22 @@ class ColorClouds(Dataset):
             # Assemble from combination of ET and laminer probe (NP) stimulus
             if len(top_corner) == 4:
                 self.stim_pos = top_corner
+                #L = self.stim_pos[2]-self.stim_pos[0]
+                assert self.stim_pos[3]-self.stim_pos[1] == self.stim_pos[2]-self.stim_pos[0], "Stim must be square (for now)"
             else:
                 self.stim_pos = [top_corner[0], top_corner[1], top_corner[0]+L, top_corner[1]+L]
+            if shifts is not None:
+                need2crop = True
+                # Modify stim window by 20-per-side
+                self.stim_pos = [
+                    self.stim_pos[0]-BUF,
+                    self.stim_pos[1]-BUF,
+                    self.stim_pos[2]+BUF,
+                    self.stim_pos[3]+BUF]
+
+            L = self.stim_pos[2]-self.stim_pos[0]
+            assert self.stim_pos[3]-self.stim_pos[1] == L, "Stimulus not square"
+
             newstim = np.zeros( [self.NT, num_clr, L, L] )
             OVLP = self.rectangle_overlap_ranges(self.stim_pos, self.stim_location)
             if OVLP is not None:
@@ -449,20 +464,9 @@ class ColorClouds(Dataset):
 
             self.stim = torch.tensor( newstim, dtype=torch.float32, device=self.device )
 
-        self.num_lags = num_lags
-        self.stim_dims = [self.dims[0], L, L, 1]
         #print('Stim shape', self.stim.shape)
         # Note stim stored in numpy is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
-
-        self.stim_shifts = shifts
-        if self.stim_shifts is not None:
-            # Would want to shift by input eye positions if input here
-            #print('eye-position shifting not implemented yet')
-            self.stim = self.shift_stim( shifts, already_lagged=False )
-
-        self.stim_crop = stim_crop 
-        if self.stim_crop is not None:
-            self.crop_stim()
+        self.stim_dims = [self.dims[0], L, L, 1]
 
         # Insert fixation point
         if (fixdot is not None) and self.is_fixpoint_present( self.stim_pos ):
@@ -481,6 +485,22 @@ class ColorClouds(Dataset):
             for xx in fixranges[0]:
                 self.stim[:, :, xx, fixranges[1]] = 0
 
+        self.stim_shifts = shifts
+        if self.stim_shifts is not None:
+            # Would want to shift by input eye positions if input here
+            #print('eye-position shifting not implemented yet')
+            self.stim = self.shift_stim( shifts, already_lagged=False )
+
+        # Reduce size back to original If expanded to handle shifts
+        if need2crop:
+            #assert self.stim_crop is None, "Cannot crop stim at same time as shifting"
+            self.crop_stim( [BUF, L-BUF-1, BUF, L-BUF-1] )  # move back to original size
+            self.stim_crop = None
+        else:
+            self.stim_crop = stim_crop 
+            if self.stim_crop is not None:
+                self.crop_stim()
+
         if time_embed is not None:
             self.time_embed = time_embed
         if time_embed > 0:
@@ -488,6 +508,9 @@ class ColorClouds(Dataset):
             if time_embed == 2:
                 self.stim = self.time_embedding( self.stim, nlags = num_lags )
         # now stimulus is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
+
+        self.num_lags = num_lags
+        self.stim_dims = [self.dims[0], L, L, 1]
 
         # Flatten stim 
         self.stim = self.stim.reshape([self.NT, -1])
@@ -729,17 +752,18 @@ class ColorClouds(Dataset):
             return None
     # END .avrates()
 
-    def shift_stim(self, pos_shifts, metrics=None, metric_threshold = 1, ts_thresh=8, already_lagged=True ):
+    def shift_stim(self, pos_shifts, metrics=None, metric_threshold=1, ts_thresh=8, already_lagged=True ):
         """Shift stimulus given standard shifting input (TBD)"""
         NX = self.stim_dims[1]
         nlags = self.stim_dims[3]
+
         # Check if has been time-lagged yet
   
         if already_lagged:
             re_stim = deepcopy(self.stim).reshape([-1] + self.stim_dims)[..., 0]
         else:
             assert len(self.stim) > 2, "Should be already lagged, but seems not"
-            re_stim = deepcopy(self.stim)            
+            re_stim = deepcopy(self.stim)
 
         fix_n = np.array(self.fix_n, dtype=np.int64)
         NF = np.max(fix_n)
@@ -749,7 +773,7 @@ class ColorClouds(Dataset):
         #sh1 = -(pos_shifts[:,1]-self.dims[2]//2)
         sh0 = pos_shifts[:, 0]  # this should be in units of pixels relative to 0
         sh1 = pos_shifts[:, 1]
-        print(np.mean(abs(sh0)), np.mean(sh0))
+
         sp_stim = deepcopy(re_stim)
         if metrics is not None:
             val_fix = metrics > metric_threshold
@@ -778,9 +802,9 @@ class ColorClouds(Dataset):
                 sh = int(sh1[ff])
                 if sh > 0:
                     stim_tmp2 = torch.zeros([len(ts), nclr, NX,NX], dtype=torch.float32)
-                    stim_tmp2[... ,sh:] = deepcopy(stim_tmp[..., :(-sh)])
+                    stim_tmp2[... , sh:] = deepcopy(stim_tmp[..., :(-sh)])
                 elif sh < 0:
-                    stim_tmp2 = torch.zeros([len(ts),nclr, NX,NX], dtype=torch.float32)
+                    stim_tmp2 = torch.zeros([len(ts), nclr, NX,NX], dtype=torch.float32)
                     stim_tmp2[..., :sh] = deepcopy(stim_tmp[..., (-sh):])
                 else:
                     stim_tmp2 = deepcopy(stim_tmp)
@@ -791,9 +815,8 @@ class ColorClouds(Dataset):
             # Time-embed
             idx = np.arange(NTtmp)
             laggedstim = sp_stim[np.arange(NTtmp)[:,None]-np.arange(nlags), ...]
-            return np.transpose( laggedstim, axes=[0,2,3,1] )
+            return np.transpose( laggedstim, axes=[0,2,3,4,1] )
         else:
-            print('there')
             return sp_stim
 
     def shift_stim_fixation( self, stim, shift):
