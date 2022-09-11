@@ -496,6 +496,9 @@ class ColorClouds(Dataset):
             #assert self.stim_crop is None, "Cannot crop stim at same time as shifting"
             self.crop_stim( [BUF, L-BUF-1, BUF, L-BUF-1] )  # move back to original size
             self.stim_crop = None
+            L = L-2*BUF
+            self.stim_dims[1] = L
+            self.stim_dims[2] = L
         else:
             self.stim_crop = stim_crop 
             if self.stim_crop is not None:
@@ -510,7 +513,7 @@ class ColorClouds(Dataset):
         # now stimulus is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
 
         self.num_lags = num_lags
-        self.stim_dims = [self.dims[0], L, L, 1]
+        #self.stim_dims = [self.dims[0], L, L, num_lags]
 
         # Flatten stim 
         self.stim = self.stim.reshape([self.NT, -1])
@@ -630,7 +633,6 @@ class ColorClouds(Dataset):
             self.stim_crop = stim_crop 
         assert len(stim_crop) == 4, "stim_crop must be of form: [x1, x2, y1, y2]"
 
-        print(self.stim.shape, self.dims, self.stim_dims)
         if len(self.stim.shape) == 2:
             self.stim = self.stim.reshape([self.NT] + self.stim_dims)
             reshape=True
