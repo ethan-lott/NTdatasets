@@ -421,7 +421,7 @@ class ColorClouds(Dataset):
                 self.stim_pos = self.stim_locationET[:,0]
             else:
                 print("Stim: using laminar probe stimulus")
-                self.stim = torch.tensor( self.stimET, dtype=torch.float32, device=self.device )
+                self.stim = torch.tensor( self.stimLP, dtype=torch.float32, device=self.device )
                 self.stim_pos = self.stim_location
 
         else:
@@ -513,10 +513,10 @@ class ColorClouds(Dataset):
         # now stimulus is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
 
         self.num_lags = num_lags
-        #self.stim_dims = [self.dims[0], L, L, num_lags]
 
         # Flatten stim 
         self.stim = self.stim.reshape([self.NT, -1])
+        print( "Done" )
     # END .assemble_stimulus()
     
     def rectangle_overlap_ranges( self, A, B ):   # really should be a static function
@@ -626,13 +626,12 @@ class ColorClouds(Dataset):
     # END .stim_wrap()
 
     def crop_stim( self, stim_crop=None ):
-        """Crop existing (torch) stimulus and change relevant variables"""
+        """Crop existing (torch) stimulus and change relevant variables [x1, x2, y1, y2]"""
         if stim_crop is None:
             stim_crop = self.stim_crop
         else:
             self.stim_crop = stim_crop 
         assert len(stim_crop) == 4, "stim_crop must be of form: [x1, x2, y1, y2]"
-
         if len(self.stim.shape) == 2:
             self.stim = self.stim.reshape([self.NT] + self.stim_dims)
             reshape=True
@@ -651,7 +650,9 @@ class ColorClouds(Dataset):
         self.stim_dims[1] = len(xs)
         self.stim_dims[2] = len(ys)
         if reshape:
+            print(self.stim.shape, 'reshaping back')
             self.stim = self.stim.reshape([self.NT, -1])
+
     # END .crop_stim()
 
     def process_fixations( self, sacc_in=None ):
@@ -693,6 +694,25 @@ class ColorClouds(Dataset):
         else:
             self.fix_n = fix_n
     # END: ColorClouds.process_fixations()
+
+    def augment_dfs( self, new_dfs, cells=None ):
+        """Replaces data-filter for given cells. note that new_df should be np.ndarray"""
+        
+        NTdf, NCdf = new_dfs.shape 
+        if cells is None:
+            assert NCdf == self.dfs.shape[1], "new DF is wrong shape to replace DF for all cells."
+            cells = range(self.dfs.shape[1])
+        if self.NT < NTdf:
+            self.dfs[:, cells] *= torch.tensor(new_dfs[:self.NT, :], dtype=torch.float32)
+        else:
+            if self.NT > NTdf:
+                # Assume dfs are 0 after new valid region
+                print("Truncating valid region to new datafilter length", NTdf)
+                new_dfs = np.concatenate( 
+                    (new_dfs, np.zeros([self.NT-NTdf, len(cells)], dtype=np.float32)), 
+                    axis=0)
+            self.dfs[:, cells] *= torch.tensor(new_dfs, dtype=torch.float32)
+        # END ColorClouds.replace_dfs()
 
     def draw_stim_locations( self, top_corner=None, L=60, row_height=5.0 ):
         import matplotlib.pyplot as plt
@@ -959,7 +979,9 @@ class ColorClouds(Dataset):
     # END .get_max_samples
 
     def __getitem__(self, idx):
-        
+
+        assert self.stim is not None, "Have to specify stimulus before pulling data."
+
         if self.preload:
 
             if self.time_embed == 1:
