@@ -381,25 +381,28 @@ class ColorClouds(Dataset):
         if self.fix_location is None:
             return False
         fix_present = True
-        for dd in range(2):
-            if (self.fix_location[dd]-boxlim[dd] <= -self.fix_size):
-                fix_present = False
-            if (self.fix_location[dd]-boxlim[dd+2] > self.fix_size):
-                fix_present = False
+        if self.stim_location.shape[1] == 1:
+            # if there is multiple windows, needs to be manual: so this is the automatic check:
+            for dd in range(2):
+                if (self.fix_location[dd]-boxlim[dd] <= -self.fix_size):
+                    fix_present = False
+                if (self.fix_location[dd]-boxlim[dd+2] > self.fix_size):
+                    fix_present = False
         return fix_present
     # END .is_fixpoint_present
 
     def assemble_stimulus(self,
         which_stim=None, stim_wrap=None, stim_crop=None, # conventional stim: ET=0, lam=1,
         top_corner=None, L=60,  # position of stim
-        time_embed=None, num_lags=10,
+        time_embed=0, num_lags=10,
         shifts=None, BUF=20, # shift buffer
         fixdot=0 ):
         """This assembles a stimulus from the raw numpy-stored stimuli into self.stim
         which_stim: determines what stimulus is assembled from 'ET'=0, 'lam'=1, None
             If none, will need top_corner present: can specify with four numbers (top-left, bot-right)
             or just top_corner and L
-        which is torch.tensor on default device"""
+        which is torch.tensor on default device
+        stim_wrap: only works if using 'which_stim', and will be [hwrap, vwrap]"""
 
         # Delete existing stim and clear cache to prevent memory issues on GPU
         if self.stim is not None:
@@ -422,7 +425,7 @@ class ColorClouds(Dataset):
             else:
                 print("Stim: using laminar probe stimulus")
                 self.stim = torch.tensor( self.stimLP, dtype=torch.float32, device=self.device )
-                self.stim_pos = self.stim_location
+                self.stim_pos = self.stim_location[:, 0]
 
         else:
             assert top_corner is not None, "Need top corner if which_stim unspecified"
@@ -446,12 +449,13 @@ class ColorClouds(Dataset):
             assert self.stim_pos[3]-self.stim_pos[1] == L, "Stimulus not square"
 
             newstim = np.zeros( [self.NT, num_clr, L, L] )
-            OVLP = self.rectangle_overlap_ranges(self.stim_pos, self.stim_location)
-            if OVLP is not None:
-                print("  Writing lam stim: overlap %d, %d"%(len(OVLP['targetX']), len(OVLP['targetY'])))
-                strip = np.zeros([self.NT, num_clr, len(OVLP['targetX']), L])
-                strip[:, :, :, OVLP['targetY']] = deepcopy((self.stimLP[:, :, OVLP['readX'], :][:, :, :, OVLP['readY']]))
-                newstim[:, :, OVLP['targetX'], :] = deepcopy(strip)
+            for ii in range(self.stim_location.shape[1]):
+                OVLP = self.rectangle_overlap_ranges(self.stim_pos, self.stim_location[:, ii])
+                if OVLP is not None:
+                    print("  Writing lam stim %d: overlap %d, %d"%(ii, len(OVLP['targetX']), len(OVLP['targetY'])))
+                    strip = deepcopy(newstim[:, :, OVLP['targetX'], :]) #np.zeros([self.NT, num_clr, len(OVLP['targetX']), L])
+                    strip[:, :, :, OVLP['targetY']] = deepcopy((self.stimLP[:, :, OVLP['readX'], :][:, :, :, OVLP['readY']]))
+                    newstim[:, :, OVLP['targetX'], :] = deepcopy(strip)
                 
             if self.stimET is not None:
                 for ii in range(self.stim_locationET.shape[1]):
@@ -468,6 +472,14 @@ class ColorClouds(Dataset):
         # Note stim stored in numpy is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
         self.stim_dims = [self.dims[0], L, L, 1]
 
+        # stim_wrap if 'which_stim' chosen
+        if stim_wrap is not None:
+            assert which_stim is not None, "Should only use stim_wrap on conventional (ET or LAM) stimulus."
+            hwrap = stim_wrap[0]
+            vwrap = stim_wrap[1]
+            self.wrap_stim( hwrap=-hwrap, vwrap=-vwrap )
+            self.stim_pos += [-hwrap, -vwrap, -hwrap, -vwrap]
+
         # Insert fixation point
         if (fixdot is not None) and self.is_fixpoint_present( self.stim_pos ):
             fixranges = [None, None]
@@ -482,6 +494,7 @@ class ColorClouds(Dataset):
             #strip = deepcopy(self.stim[:, :, fixranges[0], :])
             #strip[:, :, :, fixranges[1]] = 0
             #self.stim[:, :, fixranges[0], :] = deepcopy(strip) 
+            print('adding fixation point')
             for xx in fixranges[0]:
                 self.stim[:, :, xx, fixranges[1]] = 0
 
@@ -608,22 +621,45 @@ class ColorClouds(Dataset):
         """Take existing stimulus and move the whole thing around in horizontal and/or vertical dims,
         including if time_embedded"""
 
-        tmp_stim = deepcopy(self.stim).reshape([self.NT] + self.dims)
+        assert self.stim is not None, "Must assemble the stimulus before using wrap_stim."
+        orig_stim_dims = len(self.stim.shape)
+        if orig_stim_dims == 5:
+            tmp_stim = deepcopy(self.stim)
+        elif orig_stim_dims == 4:
+            tmp_stim = deepcopy(self.stim[:, :, :, :, None])  # put in lags as one dim
+        else:
+            tmp_stim = deepcopy(self.stim).reshape([self.NT] + self.dims)
+
         NY = self.stim_dims[2]
         if vwrap > 0:
-            self.stim = torch.zeros(tmp_stim.shape, device=tmp_stim.device)
-            self.stim[:, :, :, :vwrap, :] = tmp_stim[:, :, :, (NY-vwrap):, :]
-            self.stim[:, :, :, vwrap:, :] = tmp_stim[:, :, :, :(NY-vwrap), :]
+            tmp2 = torch.zeros(tmp_stim.shape, device=tmp_stim.device)
+            tmp2[:, :, :, :vwrap, :] = tmp_stim[:, :, :, (NY-vwrap):, :]
+            tmp2[:, :, :, vwrap:, :] = tmp_stim[:, :, :, :(NY-vwrap), :]
         elif vwrap < 0:
-            self.stim = torch.zeros(tmp_stim.shape, device=tmp_stim.device)
-            self.stim[:, :, :, (NY-vwrap):, :] = tmp_stim[:, :, :, :vwrap, :]
-            self.stim[:, :, :, :(NY-vwrap), :] = tmp_stim[:, :, :, vwrap:, :]
-        
-        if hwrap != 0:
-            print("Horizontal wraps not implemented yet, since they are probably useless.")
+            tmp2 = torch.zeros(tmp_stim.shape, device=tmp_stim.device)
+            tmp2[:, :, :, (NY+vwrap):, :] = tmp_stim[:, :, :, :(-vwrap), :]
+            tmp2[:, :, :, :(NY+vwrap), :] = tmp_stim[:, :, :, (-vwrap):, :]
+        else:
+            tmp2 = tmp_stim
 
-        self.stim = self.stim.reshape( [self.NT, -1] )
-    # END .stim_wrap()
+        NX = self.stim_dims[1]
+        if hwrap > 0:
+            self.stim = torch.zeros(tmp2.shape, device=tmp2.device)
+            self.stim[:, :, :hwrap, :, :] = tmp2[:, :, (NX-hwrap):, :, :]
+            self.stim[:, :, hwrap:, :, :] = tmp2[:, :, :(NX-hwrap), :, :]
+        elif hwrap < 0:
+            self.stim = torch.zeros(tmp2.shape, device=tmp2.device)
+            self.stim[:, :, (NX+hwrap):, :, :] = tmp2[:, :, :(-hwrap), :, :]
+            self.stim[:, :, :(NX+hwrap), :, :] = tmp2[:, :, (-hwrap):, :, :]
+        else:
+            self.stim = deepcopy(tmp2)
+
+        if orig_stim_dims == 3:
+            self.stim = self.stim.reshape( [self.NT, -1] )
+        elif orig_stim_dims == 4:
+            # Take out extra lag dim
+            self.stim = self.stim[:, :, :, :, 0]
+    # END .wrap_stim()
 
     def crop_stim( self, stim_crop=None ):
         """Crop existing (torch) stimulus and change relevant variables [x1, x2, y1, y2]"""
@@ -714,25 +750,31 @@ class ColorClouds(Dataset):
             self.dfs[:, cells] *= torch.tensor(new_dfs, dtype=torch.float32)
         # END ColorClouds.replace_dfs()
 
-    def draw_stim_locations( self, top_corner=None, L=60, row_height=5.0 ):
+    def draw_stim_locations( self, top_corner=None, L=None, row_height=5.0 ):
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
 
-        lamloc = self.stim_location
+        lamlocs = self.stim_location
         ETlocs = self.stim_locationET
         fixloc = self.fix_location
         fixsize = self.fix_size
-
         BUF = 10
+        if L is None:
+            L = lamlocs[2,0]-lamlocs[0,0]
+
         fig, ax = plt.subplots()
         fig.set_size_inches(row_height, row_height)
         nET = ETlocs.shape[1]
-        x0 = np.minimum( np.min(lamloc[0,:]), np.min(ETlocs[0,:]) )
-        x1 = np.maximum( np.max(lamloc[2,:]), np.max(ETlocs[2,:]) )
-        y0 = np.minimum( np.min(lamloc[1,:]), np.min(ETlocs[1,:]) )
-        y1 = np.maximum( np.max(lamloc[3,:]), np.max(ETlocs[3,:]) )
+        nLAM = lamlocs.shape[1]
+        x0 = np.minimum( np.min(lamlocs[0,:]), np.min(ETlocs[0,:]) )
+        x1 = np.maximum( np.max(lamlocs[2,:]), np.max(ETlocs[2,:]) )
+        y0 = np.minimum( np.min(lamlocs[1,:]), np.min(ETlocs[1,:]) )
+        y1 = np.maximum( np.max(lamlocs[3,:]), np.max(ETlocs[3,:]) )
         #print(x0,x1,y0,y1)
-        ax.add_patch(Rectangle((lamloc[0], lamloc[1]), 60, 60, edgecolor='red', facecolor='none', linewidth=1.5))
+        for ii in range(nLAM):
+            ax.add_patch(
+                Rectangle((lamlocs[0, ii], lamlocs[1, ii]), L, L, 
+                edgecolor='red', facecolor='none', linewidth=1.5))
         clrs = ['blue', 'green', 'purple']
         for ii in range(nET):
             ax.add_patch(Rectangle((ETlocs[0,ii], ETlocs[1,ii]), 60, 60, 
