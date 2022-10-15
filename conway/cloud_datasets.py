@@ -46,7 +46,7 @@ class ColorClouds(Dataset):
         eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
         binocular = False, # whether to include separate filters for each eye
         # other
-        include_MUs = False,
+        include_MUs = True,
         preload = True,
         #eyepos = None,
         drift_interval = None,
@@ -773,7 +773,7 @@ class ColorClouds(Dataset):
         #print(x0,x1,y0,y1)
         for ii in range(nLAM):
             ax.add_patch(
-                Rectangle((lamlocs[0, ii], lamlocs[1, ii]), L, L, 
+                Rectangle((lamlocs[0, ii], lamlocs[1, ii]), 60, 60, 
                 edgecolor='red', facecolor='none', linewidth=1.5))
         clrs = ['blue', 'green', 'purple']
         for ii in range(nET):
