@@ -99,7 +99,7 @@ class WhiskerData(SensoryBase):
         if num_lags is None:
             num_lags = self.num_lags
 
-        self.stim_dims = [1, 2, 1, 1]
+        self.stim_dims = [2, 1, 1, 1]
         if stim_config == 0:
             self.stim = self.time_embedding( stim=self.touches[:, :2], nlags=num_lags )
             self.stimA = self.time_embedding( stim=self.touches[:, 2:], nlags=num_lags )
@@ -107,7 +107,7 @@ class WhiskerData(SensoryBase):
             self.stimA = self.time_embedding( stim=self.touches[:, :2], nlags=num_lags )
             self.stim = self.time_embedding( stim=self.touches[:, 2:], nlags=num_lags )
         else:
-            self.stim_dims = [1, 4, 1, 1]
+            self.stim_dims = [4, 1, 1, 1]
             self.stim = self.time_embedding( stim=self.touches, nlags=num_lags )
             self.stimA = None
     # END WhiskerData.prepare_stim()
