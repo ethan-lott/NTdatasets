@@ -205,6 +205,9 @@ class HNdataset(SensoryBase):
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
 
+        if len(self.covariates) > 0:
+            self.append_covariates( out, idx)
+
         return out
     # END HNdata.__getitem()
     

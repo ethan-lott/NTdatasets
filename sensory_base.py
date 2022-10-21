@@ -86,17 +86,21 @@ class SensoryBase(Dataset):
     def add_covariate( self, cov_name=None, cov=None ):
         assert cov_name is not None, "Need cov_name"
         assert cov is not None, "Missing cov"
-        if len(cov.shape > 2):
+        if len(cov.shape) > 2:
             dims = cov.shape[1:]
             if len(dims) < 4:
                 dims = np.concatenate( (dims, np.ones(4-len(dims))), axis=0 )
             cov = cov.reshape([-1, np.prod(dims)])
         else:
             dims = [1, cov.shape[1], 1, 1]
-        [NT, Ndims] = cov.shape
+        NT = cov.shape[0]
         assert self.NT == NT, "Wrong number of time points"
-        self.covariates[cov_name] = deepcopy(cov)
-        self.cov_dims = dims
+
+        self.cov_dims[cov_name] = dims
+        if isinstance(cov, torch.Tensor):
+            self.covariates[cov_name] = deepcopy(cov)
+        else:
+            self.covariates[cov_name] = torch.tensor(cov, dtype=torch.float32)
     # END SensoryBase.add_covariate()
 
     def append_covariates( self, out, idx ):
