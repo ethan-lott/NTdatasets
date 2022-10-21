@@ -58,6 +58,9 @@ class SensoryBase(Dataset):
         self.SUinds = []
         self.MUinds = []
         self.cells_out = []  # can be list to output specific cells in get_item
+        self.robs_out = None
+        self.dfs_out = None
+
         self.avRs = None
 
         # Set up to store default train_, val_, test_inds
@@ -104,6 +107,27 @@ class SensoryBase(Dataset):
 
     def prepare_stim( self ):
         print('Default prepare stimulus method.')
+
+    def set_cells( self, cell_list=None):
+        """Set outputs to potentially limit robs/dfs to certain cells 
+        This sets cells_out but also constructs efficient data structures"""
+        if cell_list is None:
+            # Then reset to full list
+            self.cells_out = []
+            self.robs_out = None
+            self.dfs_out = None
+            print("  Reset cells_out to full dataset (%d cells)."%self.NC )
+        else:
+            if not isinstance(cell_list, list):
+                if isinstance(cell_list, int):
+                    cell_list = [cell_list]
+                else:
+                    cell_list = list(cell_list)
+            assert np.max(np.array(cell_list)) < self.NC, "ERROR: cell_list too high."
+            self.cells_out = cell_list
+            self.robs_out = deepcopy(self.robs[:, cell_list])
+            self.dfs_out = deepcopy(self.dfs[:, cell_list])
+    # END SensoryBase.set_cells()
 
     def time_embedding( self, stim=None, nlags=None ):
         """Assume all stim dimensions are flattened into single dimension. 
@@ -204,6 +228,7 @@ class SensoryBase(Dataset):
             X = X[:, :-1]
 
         if to_plot:
+            import matplotlib.pyplot as plt
             plt.imshow(X.T, aspect='auto', interpolation='none')
             plt.show()
 
@@ -237,17 +262,22 @@ class SensoryBase(Dataset):
         """
         if inds is None:
             inds = range(self.NT)
+        if len(self.cells_out) == 0:
+            cells = np.arange(self.NC)
+        else:
+            cells = self.cells_out
+
         if len(inds) == self.NT:
             # then calculate across whole dataset
             if self.avRs is not None:
                 # then precalculated and do not need to do
-                return self.avRs
+                return self.avRs[cells]
 
         # Otherwise calculate across all data
         if self.preload:
             Reff = (self.dfs * self.robs).sum(dim=0).cpu()
             Teff = self.dfs.sum(dim=0).clamp(min=1e-6).cpu()
-            return (Reff/Teff).detach().numpy()
+            return (Reff/Teff)[cells].detach().numpy()
         else:
             print('Still need to implement avRs without preloading')
             return None

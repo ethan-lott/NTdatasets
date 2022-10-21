@@ -1023,7 +1023,8 @@ class ColorClouds(Dataset):
     def __getitem__(self, idx):
 
         assert self.stim is not None, "Have to specify stimulus before pulling data."
-
+        #if isinstance(idx, np.ndarray):
+        #    idx = list(idx)
         if self.preload:
 
             if self.time_embed == 1:
@@ -1041,9 +1042,13 @@ class ColorClouds(Dataset):
                         'fix_n': self.fix_n[idx]}
                         # missing saccade timing vector -- not specified
                 else:
-                    assert isinstance(self.cells_out, list), 'cells_out must be a list'
-                    robs_tmp =  self.robs[:, self.cells_out]
-                    dfs_tmp =  self.dfs[:, self.cells_out]
+                    if self.robs_out is not None:
+                        robs_tmp = self.robs_out
+                        dfs_tmp = self.dfs_out
+                    else:
+                        assert isinstance(self.cells_out, list), 'cells_out must be a list'
+                        robs_tmp =  self.robs[:, self.cells_out]
+                        dfs_tmp =  self.dfs[:, self.cells_out]
                     out = {'stim': self.stim[idx, :],
                         'robs': robs_tmp[idx, :],
                         'dfs': dfs_tmp[idx, :],

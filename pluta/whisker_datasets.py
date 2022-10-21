@@ -134,7 +134,7 @@ class WhiskerData(SensoryBase):
                 'robs': self.robs[idx, :],
                 'dfs': self.dfs[idx, :]}
         else:
-            assert isinstance(self.cells_out, list), 'cells_out must be a list'
+            assert isinstance(self.cells_out, np.ndarray), 'cells_out must be a numpy array'
             robs_tmp =  self.robs[:, self.cells_out]
             dfs_tmp =  self.dfs[:, self.cells_out]
             out = {'stim': self.stim[idx, :],
