@@ -10,9 +10,10 @@ import NDNT.utils as utils
 #from NDNT.utils import download_file, ensure_dir
 from copy import deepcopy
 import h5py
+from NTdatasets.sensory_base import SensoryBase
 
 
-class ColorClouds(Dataset):
+class ColorClouds(SensoryBase):
     """
     -- can load batches from multiple datasets
     -- hdf5 files must have the following information:
@@ -32,76 +33,90 @@ class ColorClouds(Dataset):
     """
 
     def __init__(self,
-        sess_list,
+        filenames,
         datadir, 
+        time_embed=2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
+        num_lags=10, 
+        include_MUs=False,
+        preload=True,
+        drift_interval=None,
+        device=torch.device('cpu'),
+        # Dataset-specitic inputs
         # Stim setup -- if dont want to assemble stimulus: specify all things here for default options
-        which_stim = None,  # 'et' or 0, or 1 for lam, but default assemble later
-        num_lags=None, 
-        stim_crop = None,  # should be list/array of 4 numbers representing inds of edges
-        time_embed = 2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
-
-        folded_lags=False, 
+        which_stim=None,  # 'et' or 0, or 1 for lam, but default assemble later
+        stim_crop=None,  # should be list/array of 4 numbers representing inds of edges
         luminance_only=True,
-        maxT = None,
-        eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
+        folded_lags=False, 
         binocular = False, # whether to include separate filters for each eye
-        # other
-        include_MUs = True,
-        preload = True,
-        #eyepos = None,
-        drift_interval = None,
-        device=torch.device('cpu')):
+        eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
+        maxT = None):
         """Constructor options"""
 
-        self.datadir = datadir
-        self.sess_list = sess_list
-        self.device = device
-        
-        self.num_lags = 10  # default: to be set later
+        super().__init__(
+            filenames=filenames, datadir=datadir, 
+            time_embed=time_embed, num_lags=num_lags, 
+            include_MUs=include_MUs, preload=preload,
+            drift_interval=drift_interval, device=device)
+
+        # Done in constructor
+        #self.datadir = datadir
+        #self.filenames = filenames
+        #self.device = device
+        #self.num_lags = 10  # default: to be set later
         #if time_embed == 2:
         #    assert preload, "Cannot pre-time-embed without preloading."
-        self.time_embed = 2 # time_embed
-        self.preload = preload
-        self.stim_crop = None #stim_crop
+        #self.time_embed = time_embed
+        #self.preload = preload
+
+        # Stim-specific
+        self.stim_crop = None 
         self.folded_lags = folded_lags
         self.eye_config = eye_config
         self.binocular = binocular
         self.luminance_only = luminance_only
+        self.generate_Xfix = False
+
         self.start_t = 0
         self.drift_interval = drift_interval
 
         # get hdf5 file handles
-        self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.sess_list]
+        self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.filenames]
 
-        # build index map
-        self.data_threshold = 6  # how many valid time points required to include saccade?
-        self.file_index = [] # which file the block corresponds to
-        self.sacc_inds = []
-        #self.unit_ids = []
-        self.num_units, self.num_sus, self.num_mus = [], [], []
-        self.sus = []
-        self.NC = 0    
-        #self.stim_dims = None
-        self.stim_shifts = None
-        self.generate_Xfix = False
-        self.num_blks = np.zeros(len(sess_list), dtype=int)
-        self.block_inds = []
-        self.block_filemapping = []
-        self.include_MUs = include_MUs
-        self.SUinds = []
-        self.MUinds = []
-        self.cells_out = []  # can be list to output specific cells in get_item
         self.avRs = None
 
         # Set up to store default train_, val_, test_inds
-        self.test_inds = None
-        self.val_inds = None
-        self.train_inds = None
+        #self.test_inds = None
+        #self.val_inds = None
+        #self.train_inds = None
+        #self.used_inds = []
 
         # Data to construct and store in memory
+        #self.stim = []
+        #self.dfs = []
+        #self.robs = []
         self.fix_n = []
-        self.stim = None
         self.used_inds = []
+        self.NT = 0
+
+        # build index map -- exclude variables already set in sensory-base
+        self.num_blks = np.zeros(len(filenames), dtype=int)
+        self.data_threshold = 6  # how many valid time points required to include saccade?
+        self.file_index = [] # which file the block corresponds to
+        self.sacc_inds = []
+        self.stim_shifts = None
+        #self.stim_dims = None
+
+        #self.unit_ids = []
+        #self.num_units, self.num_SUs, self.num_MUs = [], [], []
+        #self.SUs = []
+        #self.NC = 0    
+        #self.block_inds = []
+        #self.block_filemapping = []
+        #self.include_MUs = include_MUs
+        #self.SUinds = []
+        #self.MUinds = []
+        #self.cells_out = []  # can be list to output specific cells in get_item
+        #self.avRs = None
 
         tcount = 0
 
@@ -109,9 +124,9 @@ class ColorClouds(Dataset):
 
             NT, NSUfile = fhandle['Robs'].shape
             NMUfile = fhandle['RobsMU'].shape[1]
-            self.num_sus.append(NSUfile)
-            self.num_mus.append(NMUfile)
-            self.sus = self.sus + list(range(self.NC, self.NC+NSUfile))
+            self.num_SUs.append(NSUfile)
+            self.num_MUs.append(NMUfile)
+            self.SUs = self.SUs + list(range(self.NC, self.NC+NSUfile))
             blk_inds = np.array(fhandle['block_inds'], dtype=np.int64)
             blk_inds[:, 0] += -1  # convert to python so range works
 
@@ -172,7 +187,7 @@ class ColorClouds(Dataset):
         self.NT  = tcount
 
         # For now let's just debug with one file
-        if len(sess_list) > 1:
+        if len(filenames) > 1:
             print('Warning: currently ignoring multiple files')
         self.used_inds = deepcopy(valid_inds)
         self.sacc_inds = deepcopy(sacc_inds)
@@ -257,7 +272,8 @@ class ColorClouds(Dataset):
             anchors = np.zeros(Nanchors, dtype=np.int64)
             for bb in range(Nanchors):
                 anchors[bb] = self.block_inds[self.drift_interval*bb][0]
-            self.Xdrift = utils.design_matrix_drift( self.NT, anchors, zero_left=False, const_right=True)
+            #self.Xdrift = utils.design_matrix_drift( self.NT, anchors, zero_left=False, const_right=True)
+            self.Xdrift = self.design_matrix_drift( self.NT, anchors, zero_left=False, const_right=True)
 
         # Write all relevant data (other than stim) to pytorch tensors after organized
         self.to_tensor( self.device )
@@ -494,7 +510,7 @@ class ColorClouds(Dataset):
             #strip = deepcopy(self.stim[:, :, fixranges[0], :])
             #strip[:, :, :, fixranges[1]] = 0
             #self.stim[:, :, fixranges[0], :] = deepcopy(strip) 
-            print('adding fixation point')
+            print('  Adding fixation point')
             for xx in fixranges[0]:
                 self.stim[:, :, xx, fixranges[1]] = 0
 
@@ -529,7 +545,7 @@ class ColorClouds(Dataset):
 
         # Flatten stim 
         self.stim = self.stim.reshape([self.NT, -1])
-        print( "Done" )
+        print( "  Done" )
     # END .assemble_stimulus()
     
     def rectangle_overlap_ranges( self, A, B ):   # really should be a static function
@@ -583,6 +599,7 @@ class ColorClouds(Dataset):
                 self.Xdrift = torch.tensor(self.Xdrift, dtype=torch.float32, device=device)
 
     def time_embedding( self, stim=None, nlags=None ):
+        """Note this overloads SensoryBase because reshapes in full dimensions to handle folded_lags"""
         assert self.stim_dims is not None, "Need to assemble stim before time-embedding."
         if nlags is None:
             nlags = self.num_lags

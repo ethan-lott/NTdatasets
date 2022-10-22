@@ -28,14 +28,14 @@ class SensoryBase(Dataset):
         datadir, 
         # Stim setuup
         num_lags=10,
-        time_embed = 2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
-        maxT = None,
+        time_embed=2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
+        #maxT = None,
         # other
         include_MUs = False,
         preload = True,
         drift_interval = None,
-        device=torch.device('cpu'),
-        **kwargs):
+        device=torch.device('cpu')
+        ):
         """Constructor options"""
 
         self.datadir = datadir
@@ -49,8 +49,8 @@ class SensoryBase(Dataset):
         self.drift_interval = drift_interval
 
         # Assign standard variables
-        self.num_units, self.num_sus, self.num_mus = [], [], []
-        self.sus = []
+        self.num_units, self.num_SUs, self.num_MUs = [], [], []
+        self.SUs = []
         self.NC = 0    
         self.block_inds = []
         self.block_filemapping = []
@@ -149,9 +149,8 @@ class SensoryBase(Dataset):
                 tmp_stim = torch.tensor( stim, dtype=torch.float32)
             else:
                 tmp_stim = deepcopy(stim)
-        #if not isinstance(tmp_stim, np.ndarray):
-        #    tmp_stim = tmp_stim.cpu().numpy()
  
+        print( "  Time embedding..." )
         NT = stim.shape[0]
         original_dims = None
         if len(tmp_stim.shape) != 2:
@@ -172,9 +171,9 @@ class SensoryBase(Dataset):
         """Note this requires self.block_inds, and either uses self.drift_interval or block_anchors"""
 
         assert self.block_inds is not None, "Need block_inds defined as an internal variable"
-        NBL = len(self.block_inds)
 
         if block_anchors is None:
+            NBL = len(self.block_inds)
             if self.drift_interval is None:
                 self.Xdrift = None
                 return
