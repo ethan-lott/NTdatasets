@@ -58,7 +58,7 @@ class ColorClouds(SensoryBase):
             include_MUs=include_MUs, preload=preload,
             drift_interval=drift_interval, device=device)
 
-        # Done in constructor
+        # Done in parent constructor
         #self.datadir = datadir
         #self.filenames = filenames
         #self.device = device
@@ -81,7 +81,6 @@ class ColorClouds(SensoryBase):
 
         # get hdf5 file handles
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.filenames]
-
         self.avRs = None
 
         # Set up to store default train_, val_, test_inds
@@ -129,6 +128,10 @@ class ColorClouds(SensoryBase):
             self.SUs = self.SUs + list(range(self.NC, self.NC+NSUfile))
             blk_inds = np.array(fhandle['block_inds'], dtype=np.int64)
             blk_inds[:, 0] += -1  # convert to python so range works
+            # Check to make sure not inverted blk_inds (older version of data)
+            if blk_inds.shape[0] == 2:
+                print('WARNING: blk_inds is stored old-style: transposing')
+                blk_inds = blk_inds.T
 
             self.channel_mapSU = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)[0, :]
             self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)[0, :]
@@ -179,8 +182,12 @@ class ColorClouds(SensoryBase):
             sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
             sacc_inds[:, 0] += -1  # convert to python so range works
 
-            valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)[:,0]-1  #range(self.NT)  # default -- to be changed at end of init
-            
+            valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)-1  #range(self.NT)  # default -- to be changed at end of init
+            if valid_inds.shape[0] == 1:   # Make version-read proof
+                valid_inds = valid_inds[0, :]
+                print('WARNING: Old-stype valid_inds saved. Transposing')
+            else:
+                valid_inds = valid_inds[:, 0]
             tcount += NT
             # make larger fix_n, valid_inds, sacc_inds, block_inds as self
 
@@ -254,8 +261,6 @@ class ColorClouds(SensoryBase):
             self.sacc_inds = self.sacc_inds[ self.sacc_inds[:, 0] >= 0, :]  
             self.sacc_inds = self.sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
 
-            ## 
-
         ### Process blocks and fixations/saccades
         for ii in range(blk_inds.shape[0]):
             # note this will be the inds in each file -- file offset must be added for mult files
@@ -263,6 +268,7 @@ class ColorClouds(SensoryBase):
 
         self.process_fixations()
 
+        print(self.drift_interval)
         ### Construct drift term if relevant
         if self.drift_interval is None:
             self.Xdrift = None
@@ -409,7 +415,7 @@ class ColorClouds(SensoryBase):
 
     def assemble_stimulus(self,
         which_stim=None, stim_wrap=None, stim_crop=None, # conventional stim: ET=0, lam=1,
-        top_corner=None, L=60,  # position of stim
+        top_corner=None, L=None,  # position of stim
         time_embed=0, num_lags=10,
         shifts=None, BUF=20, # shift buffer
         fixdot=0 ):
@@ -423,11 +429,13 @@ class ColorClouds(SensoryBase):
         # Delete existing stim and clear cache to prevent memory issues on GPU
         if self.stim is not None:
             del self.stim
+            self.stim = None
             torch.cuda.empty_cache()
         num_clr = self.dims[0]
         need2crop = False
 
         if which_stim is not None:
+            assert L is None, "ASSEMBLE_STIMULUS: cannot specify L if using which_stim (i.e. prepackaged stim)"
             L = self.dims[1]
             if not isinstance(which_stim, int):
                 if which_stim in ['ET', 'et', 'stimET']:
@@ -451,6 +459,8 @@ class ColorClouds(SensoryBase):
                 #L = self.stim_pos[2]-self.stim_pos[0]
                 assert self.stim_pos[3]-self.stim_pos[1] == self.stim_pos[2]-self.stim_pos[0], "Stim must be square (for now)"
             else:
+                if L is None:
+                    L = self.dims[1]
                 self.stim_pos = [top_corner[0], top_corner[1], top_corner[0]+L, top_corner[1]+L]
             if shifts is not None:
                 need2crop = True
@@ -547,39 +557,6 @@ class ColorClouds(SensoryBase):
         self.stim = self.stim.reshape([self.NT, -1])
         print( "  Done" )
     # END .assemble_stimulus()
-    
-    def rectangle_overlap_ranges( self, A, B ):   # really should be a static function
-        """Figures out ranges to write relevant overlap of B onto A
-        All info is of form [x0, y0, x1, y1]"""
-        C, D = np.zeros(4, dtype=np.int64), np.zeros(4, dtype=np.int64)
-        for ii in range(2):
-            if A[ii] >= B[ii]: 
-                C[ii] = 0
-                D[ii] = A[ii]-B[ii]
-                if A[2+ii] <= B[2+ii]:
-                    C[2+ii] = A[2+ii]-A[ii]
-                    D[2+ii] = A[2+ii]-B[ii] 
-                else:
-                    C[2+ii] = B[2+ii]-A[ii]
-                    D[2+ii] = B[2+ii]-B[ii]
-            else:
-                C[ii] = B[ii]-A[ii]
-                D[ii] = 0
-                if A[2+ii] <= B[2+ii]:
-                    C[2+ii] = A[2+ii]-A[ii]
-                    D[2+ii] = A[2+ii]-B[ii]
-                else:
-                    C[2+ii] = B[2+ii]-A[ii]
-                    D[2+ii] = B[2+ii]-B[ii]
-
-        if (C[2]<=C[0]) | (C[3]<=C[1]):
-            return None  
-        ranges = {
-            'targetX': np.arange(C[0], C[2]),
-            'targetY': np.arange(C[1], C[3]),
-            'readX': np.arange(D[0], D[2]),
-            'readY': np.arange(D[1], D[3])}
-        return ranges
 
     def to_tensor(self, device):
         if isinstance(self.robs, torch.Tensor):
@@ -633,6 +610,40 @@ class ColorClouds(SensoryBase):
             tmp_stim = torch.permute( tmp_stim, (0,2,3,4,1) )
         return tmp_stim
     # END .time_embedding()
+
+    @staticmethod
+    def rectangle_overlap_ranges( A, B ):
+        """Figures out ranges to write relevant overlap of B onto A
+        All info is of form [x0, y0, x1, y1]"""
+        C, D = np.zeros(4, dtype=np.int64), np.zeros(4, dtype=np.int64)
+        for ii in range(2):
+            if A[ii] >= B[ii]: 
+                C[ii] = 0
+                D[ii] = A[ii]-B[ii]
+                if A[2+ii] <= B[2+ii]:
+                    C[2+ii] = A[2+ii]-A[ii]
+                    D[2+ii] = A[2+ii]-B[ii] 
+                else:
+                    C[2+ii] = B[2+ii]-A[ii]
+                    D[2+ii] = B[2+ii]-B[ii]
+            else:
+                C[ii] = B[ii]-A[ii]
+                D[ii] = 0
+                if A[2+ii] <= B[2+ii]:
+                    C[2+ii] = A[2+ii]-A[ii]
+                    D[2+ii] = A[2+ii]-B[ii]
+                else:
+                    C[2+ii] = B[2+ii]-A[ii]
+                    D[2+ii] = B[2+ii]-B[ii]
+
+        if (C[2]<=C[0]) | (C[3]<=C[1]):
+            return None  
+        ranges = {
+            'targetX': np.arange(C[0], C[2]),
+            'targetY': np.arange(C[1], C[3]),
+            'readX': np.arange(D[0], D[2]),
+            'readY': np.arange(D[1], D[3])}
+        return ranges
 
     def wrap_stim( self, vwrap=0, hwrap=0 ):
         """Take existing stimulus and move the whole thing around in horizontal and/or vertical dims,

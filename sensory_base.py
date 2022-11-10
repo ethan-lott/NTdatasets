@@ -123,7 +123,7 @@ class SensoryBase(Dataset):
             print("  Reset cells_out to full dataset (%d cells)."%self.NC )
         else:
             if not isinstance(cell_list, list):
-                if isinstance(cell_list, int):
+                if utils.is_int(cell_list):
                     cell_list = [cell_list]
                 else:
                     cell_list = list(cell_list)
@@ -383,6 +383,10 @@ class SensoryBase(Dataset):
         print("# samples that can fit on device: {}".format(maxsamples))
         return maxsamples
     # END .get_max_samples
+
+    def assemble_stimulus( self, **kwargs ):
+        print("SensoryBase: assemble_stimulus not implemented in class child.")
+        return
 
     def __getitem__(self, idx):
         return {}
