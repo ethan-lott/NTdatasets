@@ -56,6 +56,7 @@ class HNdataset(SensoryBase):
 
         # Saccade info
         self.Xsacc = torch.tensor( matdat['Xsacc'], dtype=torch.float32 )
+        self.Xadapt = None
         #saccdirs = matdat['sacc_dirs']
 
         # Make block_inds
@@ -178,6 +179,46 @@ class HNdataset(SensoryBase):
         # This will return a torch-tensor
     # END HNdata.prepare_stim()
 
+    def construct_Xadapt( self, tent_spacing=12, cueduncued=False ):
+        """Constructs adaptation-within-trial tent function
+        Inputs: 
+            num_tents: default 11
+            cueduncued: whether to fit separate kernels to cued/uncued
+            """
+
+        # Figure out minimum and max trial size, and then make function that fits anywhere
+        min_trial_size = len(self.block_inds[0])
+        max_trial_size = min_trial_size 
+        for ii in range(self.Ntr):
+            if len(self.block_inds[ii]) < min_trial_size:
+                min_trial_size = len(self.block_inds[ii])
+            elif len(self.block_inds[ii]) > max_trial_size:
+                max_trial_size = len(self.block_inds[ii])
+        # automatically wont have any anchors past min_trial_size
+        anchors = np.arange(0, min_trial_size, tent_spacing) 
+        # Generate master tent_basis
+        trial_tents = self.design_matrix_drift(
+            max_trial_size, anchors, zero_left=True, zero_right=False, const_right=True)
+        num_tents = trial_tents.shape[1]
+
+        if cueduncued:
+            self.Xadapt = torch.zeros((self.NT, 2*num_tents), dtype=torch.float32)
+        else:
+            self.Xadapt = torch.zeros((self.NT, num_tents), dtype=torch.float32)
+
+        for tr in range(self.Ntr):
+            L = len(self.block_inds[tr])
+            if cueduncued:
+                tmp = torch.zeros([L, 2*num_tents], dtype=torch.float32) 
+                if self.TRcued[tr] < 0:
+                    tmp[:, range(num_tents, 2*num_tents)] = torch.tensor(trial_tents[:L, :], dtype=torch.float32)
+                else:
+                    tmp[:, range(num_tents)] = torch.tensor(trial_tents[:L, :], dtype=torch.float32)
+                self.Xadapt[self.block_inds[tr], :] = deepcopy(tmp)
+            else:
+                self.Xadapt[self.block_inds[tr], :] = torch.tensor(trial_tents[:L, :], dtype=torch.float32)
+    # END HNdataset.construct_Xadapt()
+
     @staticmethod
     def train_test_assign( trial_ns, fold=4, use_random=True ):  # this should be a static function
         num_tr = len(trial_ns)
@@ -225,6 +266,9 @@ class HNdataset(SensoryBase):
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
 
+        if self.Xadapt is not None:
+            out['Xadapt'] = self.Xadapt[idx, :]
+            
         if len(self.covariates) > 0:
             self.append_covariates( out, idx)
 
