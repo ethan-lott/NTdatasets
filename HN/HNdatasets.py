@@ -12,7 +12,14 @@ from NTdatasets.sensory_base import SensoryBase
 
 class HNdataset(SensoryBase):
 
-    def __init__(self, filename=None, which_stim='left', **kwargs):
+    def __init__(self, filename=None, which_stim='left', skip_lags=2, **kwargs):
+        """
+        Inputs: 
+            filename: currently the pre-processed matlab file from Dan's old-style format
+            which_stim: which stim is relevant for the neurons in this dataset (default 'left')
+            skip_lags: shift stim to throw out early lags
+            **kwargs: non-dataset specific arguments that get passed into SensoryBase
+            """
 
         # call parent constructor
         super().__init__(filename, **kwargs)
@@ -129,7 +136,7 @@ class HNdataset(SensoryBase):
         #    f_far[nn,1] = np.sum(TRchoice[tr2] > 0)/len(tr2)
 
         # Prepare stimulus using input argument 'which_stim'
-        self.prepare_stim( which_stim=which_stim )
+        self.prepare_stim( which_stim=which_stim, skip_lags=skip_lags )
 
         # Make drift-design matrix using anchor points at each cycle
         cued_transitions = np.where(abs(np.diff(self.TRcued)) > 0)[0]
@@ -137,7 +144,12 @@ class HNdataset(SensoryBase):
         self.construct_drift_design_matrix(block_anchors = anchors) 
     # END HNdata.__init__()
 
-    def prepare_stim( self, which_stim='left', num_lags=None ):
+    def prepare_stim( self, which_stim='left', skip_lags=None, num_lags=None ):
+
+        if skip_lags is not None:  
+            self.skip_lags = skip_lags
+        # otherwise will use already set value
+            
         if which_stim in ['left', 'L', 'Left']:
             stim = torch.tensor( self.stimL, dtype=torch.float32 )
         else:
@@ -147,8 +159,16 @@ class HNdataset(SensoryBase):
         df_generic = torch.zeros( stim.shape, dtype=torch.float32 )
         df_generic[self.used_inds, :] = 1.0
         stim = stim * df_generic
-        
+
         self.stim_dims = [1, stim.shape[1], 1, 1]  # Put one-hot on first spatial dimension
+
+        # Shift stimulus by skip_lags (note this was prev multiplied by DF so will be valid)
+        if self.skip_lags > 0:
+            stim[self.skip_lags:, :] = deepcopy( stim[:-self.skip_lags, :] )
+            stim[:self.skip_lags, :] = 0.0
+        elif self.skip_lags < 0:
+            print("Currently cannot use negative skip_lags, and doesnt make sense anyway")
+            self.skip_lags = 0
 
         if num_lags is None:
             # then read from dataset (already set):
