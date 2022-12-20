@@ -125,6 +125,15 @@ class HNdataset(SensoryBase):
             self.val_inds = np.concatenate( 
                 (self.val_inds, self.block_inds[tr]), axis=0 ).astype(np.int64)
 
+        # Figure out minimum and max trial size, and then make function that fits anywhere
+        self.min_trial_size = len(self.block_inds[0])
+        self.max_trial_size = len(self.block_inds[0])
+        for ii in range(self.Ntr):
+            if len(self.block_inds[ii]) < self.min_trial_size:
+                self.min_trial_size = len(self.block_inds[ii])
+            elif len(self.block_inds[ii]) > self.max_trial_size:
+                self.max_trial_size = len(self.block_inds[ii])
+
         # Additional processing check
         # Cued and uncued stim
         #Cstim = np.multiply(TRstim[:,1], np.sign(TRstim[:,0])) # Cued stim
@@ -185,20 +194,11 @@ class HNdataset(SensoryBase):
             num_tents: default 11
             cueduncued: whether to fit separate kernels to cued/uncued
             """
-
-        # Figure out minimum and max trial size, and then make function that fits anywhere
-        min_trial_size = len(self.block_inds[0])
-        max_trial_size = min_trial_size 
-        for ii in range(self.Ntr):
-            if len(self.block_inds[ii]) < min_trial_size:
-                min_trial_size = len(self.block_inds[ii])
-            elif len(self.block_inds[ii]) > max_trial_size:
-                max_trial_size = len(self.block_inds[ii])
         # automatically wont have any anchors past min_trial_size
-        anchors = np.arange(0, min_trial_size, tent_spacing) 
+        anchors = np.arange(0, self.min_trial_size, tent_spacing) 
         # Generate master tent_basis
         trial_tents = self.design_matrix_drift(
-            max_trial_size, anchors, zero_left=True, zero_right=False, const_right=True)
+            self.max_trial_size, anchors, zero_left=False, zero_right=True, const_right=False)
         num_tents = trial_tents.shape[1]
 
         if cueduncued:
@@ -218,6 +218,31 @@ class HNdataset(SensoryBase):
             else:
                 self.Xadapt[self.block_inds[tr], :] = torch.tensor(trial_tents[:L, :], dtype=torch.float32)
     # END HNdataset.construct_Xadapt()
+
+    def trial_psths( self, trials=None, R=None ):
+        """Computes average firing rate of cells_out at bin-resolution"""
+
+        if R is None:  #then use [internal] Robs
+            if len(self.cells_out) > 0:
+                ccs = self.cells_out
+            else:
+                ccs = np.arange(self.NC)
+            R = deepcopy( self.robs[:, ccs].detach().numpy() )           
+        num_psths = R.shape[1]  # otherwise use existing input
+
+        T = self.min_trial_size
+        psths = np.zeros([T, num_psths])
+
+        if trials is None:
+            trials = np.arange(self.Ntr)
+
+        if len(trials) > 0:
+            for ii in trials:
+                psths += R[self.block_inds[ii][:T]]
+            psths *= 1.0/len(trials)
+
+        return psths
+    # END HNdataset.calculate_psths()
 
     @staticmethod
     def train_test_assign( trial_ns, fold=4, use_random=True ):  # this should be a static function
