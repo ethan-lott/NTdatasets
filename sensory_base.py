@@ -86,6 +86,8 @@ class SensoryBase(Dataset):
     def add_covariate( self, cov_name=None, cov=None ):
         assert cov_name is not None, "Need cov_name"
         assert cov is not None, "Missing cov"
+        if len(cov.shape) == 1:
+            cov = cov[:, None]
         if len(cov.shape) > 2:
             dims = cov.shape[1:]
             if len(dims) < 4:
