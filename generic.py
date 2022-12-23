@@ -18,6 +18,10 @@ class GenericDataset(Dataset):
         self.covariates = {}
         for cov in list(data.keys()):
             self.covariates[cov] = data[cov]
+            # Added to ensure no one-dimensional covariates
+            if len(data[cov].shape) == 1:
+                self.covariates[cov] = self.covariates[cov][:, None]
+
 
         if device is None:
             device = torch.device('cpu')

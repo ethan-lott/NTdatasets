@@ -57,6 +57,7 @@ class HNdataset(SensoryBase):
         # Saccade info
         self.Xsacc = torch.tensor( matdat['Xsacc'], dtype=torch.float32 )
         self.Xadapt = None
+        self.ACinput = None  # autoencoder input
         #saccdirs = matdat['sacc_dirs']
 
         # Make block_inds
@@ -219,6 +220,34 @@ class HNdataset(SensoryBase):
                 self.Xadapt[self.block_inds[tr], :] = torch.tensor(trial_tents[:L, :], dtype=torch.float32)
     # END HNdataset.construct_Xadapt()
 
+    def autoencoder_design_matrix( self, pre_win=0, post_win=0, blank=0, cells=None ):
+        """Makes auto-encoder input using windows described above, and including the
+        chosen cells. Will put as additional covariate "ACinput" in __get_item__
+        Inputs:
+            pre_win: how many time steps to include before origin
+            post_win: how many time steps to include after origin
+            blank: how many time steps to blank in each direction, including origin
+            """
+
+        if cells is None:
+            cells = np.arange(self.NC)
+        Rraw = deepcopy(self.robs[:, cells])
+        self.ACinput = torch.zeros(Rraw.shape, dtype=torch.float32)
+        nsteps = 0
+        if blank == 0:
+            self.ACinput += Rraw
+            nsteps = 1
+        for ii in range(1, (pre_win+1)):
+            self.ACinput[ii:, :] += Rraw[:(-ii), :]
+            nsteps += 1
+        for ii in range(1, (post_win+1)):
+            self.ACinput[:(-ii), :] += Rraw[ii:, :]
+            nsteps += 1
+        assert nsteps > 0, "autoencoder design: invalid parameters"
+        self.ACinput *= 1.0/nsteps
+        self.ACinput *= self.dfs[:, cells]
+    # END autoencoder_design_matrix
+
     def trial_psths( self, trials=None, R=None ):
         """Computes average firing rate of cells_out at bin-resolution"""
 
@@ -294,6 +323,9 @@ class HNdataset(SensoryBase):
         if self.Xadapt is not None:
             out['Xadapt'] = self.Xadapt[idx, :]
             
+        if self.ACinput is not None:
+            out['ACinput'] = self.ACinput[idx, :]
+
         if len(self.covariates) > 0:
             self.append_covariates( out, idx)
 
