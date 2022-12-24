@@ -68,6 +68,9 @@ class SensoryBase(Dataset):
         self.val_inds = None
         self.train_inds = None
         self.used_inds = []
+        self.speckled = False
+        self.Mtrn, self.Mval = None, None  # Data-filter masks for speckled XV
+        self.Mtrn_out, self.Mval_out = None, None  # Data-filter masks for speckled XV
 
         # Basic default memory things
         self.stim = []
@@ -341,7 +344,7 @@ class SensoryBase(Dataset):
 
     # END MultiDatasetFix.crossval_setup
 
-    def fold_sample( self, num_items, folds, random_gen=False):
+    def fold_sample( self, num_items, folds, random_gen=False, which_fold=None):
         """This really should be a general method not associated with self"""
         if random_gen:
             num_val = int(num_items/folds)
@@ -349,10 +352,44 @@ class SensoryBase(Dataset):
             val_items = np.sort(tmp_seq[:num_val])
             rem_items = np.sort(tmp_seq[num_val:])
         else:
-            offset = int(folds//2)
+            if which_fold is None:
+                offset = int(folds//2)
+            else:
+                offset = which_fold%folds
             val_items = np.arange(offset, num_items, folds, dtype='int32')
             rem_items = np.delete(np.arange(num_items, dtype='int32'), val_items)
         return val_items, rem_items
+
+    def speckledXV_setup( self, folds=5, random_gen=False ):
+        """
+        Produce data-filter masks for training and XV speckles
+        Will be produced for whole dataset, and must be reduced if cells_out used
+        """
+        Ntr = len(self.block_inds)
+
+        # Choose trials to leave out for each unit
+        self.Mval = torch.zeros(self.dfs.shape, dtype=torch.float32)
+        self.Mtrn = torch.ones(self.dfs.shape, dtype=torch.float32)
+        for cc in range(self.NC):
+            ival,_ = self.fold_sample( 
+                Ntr, folds=folds, random_gen=random_gen, which_fold=cc%folds)
+            for tr in ival:
+                self.Mval[self.block_inds[tr], cc] = 1.0
+                self.Mtrn[self.block_inds[tr], cc] = 0.0
+    # END SensoryBase.speckledXV_setup
+    
+    def set_speckledXV(self, val=True, folds=5, random_gen=False):
+        self.speckled = val
+        if val:
+            if self.Mval is None:
+                self.speckledXV_setup(folds=folds, random_gen=random_gen) 
+            if len(self.cells_out) > 0:
+                self.Mval_out = self.Mval[:, self.cells_out]
+                self.Mtrn_out = self.Mtrn[:, self.cells_out]
+            else:
+                self.Mval_out = None
+                self.Mtrn_out = None
+    # END SensoryBase.set_speckledXV
 
     def get_max_samples(self, gpu_n=0, history_size=1, nquad=0, num_cells=None, buffer=1.2):
         """

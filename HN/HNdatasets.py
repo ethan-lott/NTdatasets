@@ -309,6 +309,10 @@ class HNdataset(SensoryBase):
             out = {'stim': self.stim[idx, :],
                 'robs': self.robs[idx, :],
                 'dfs': self.dfs[idx, :]}
+            if self.speckled:
+                out['Mval'] = self.Mval[idx, :]
+                out['Mtrn'] = self.Mtrn[idx, :]
+
         else:
             assert isinstance(self.cells_out, list), 'cells_out must be a list'
             robs_tmp =  self.robs[:, self.cells_out]
@@ -316,6 +320,11 @@ class HNdataset(SensoryBase):
             out = {'stim': self.stim[idx, :],
                 'robs': robs_tmp[idx, :],
                 'dfs': dfs_tmp[idx, :]}
+            if self.speckled:
+                M1tmp = self.Mval[:, self.cells_out]
+                M2tmp = self.Mtrn[:, self.cells_out]
+                out['Mval'] = M1tmp[idx, :]
+                out['Mtrn'] = M2tmp[idx, :]
             
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
