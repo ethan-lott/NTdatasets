@@ -71,7 +71,8 @@ class SensoryBase(Dataset):
         self.speckled = False
         self.Mtrn, self.Mval = None, None  # Data-filter masks for speckled XV
         self.Mtrn_out, self.Mval_out = None, None  # Data-filter masks for speckled XV
-
+        self.Xdrift = None
+        
         # Basic default memory things
         self.stim = []
         self.dfs = []
