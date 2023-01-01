@@ -256,7 +256,9 @@ class HNdataset(SensoryBase):
                 ccs = self.cells_out
             else:
                 ccs = np.arange(self.NC)
-            R = deepcopy( self.robs[:, ccs].detach().numpy() )           
+            R = deepcopy( self.robs[:, ccs].detach().numpy() )  
+        if len(R.shape) == 1:
+            R = R[:, None]         
         num_psths = R.shape[1]  # otherwise use existing input
 
         T = self.min_trial_size

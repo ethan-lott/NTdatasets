@@ -414,7 +414,7 @@ class SensoryBase(Dataset):
         free = t - (a+r)
 
         data = self[0]
-        mempersample = data[self.stimname].element_size() * data[self.stimname].nelement() + 2*data['robs'].element_size() * data['robs'].nelement()
+        mempersample = data['stim'].element_size() * data['stim'].nelement() + 2*data['robs'].element_size() * data['robs'].nelement()
     
         mempercell = mempersample * (nquad+1) * (history_size + 1)
         buffer_bytes = buffer*1024**3

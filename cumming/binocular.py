@@ -35,13 +35,13 @@ class binocular_single(SensoryBase):
             filename, 
             num_lags=num_lags, time_embed=time_embed,
             **kwargs)
-        print('Loading', self.datadir, filename)
+        print( "Loading", self.datadir + filename)
 
         # Store stimulus trimmed to 36 - 36 binocular configuration
         stim_trim = np.concatenate( (np.arange(3,39), np.arange(45,81)))
         Bmatdat = sio.loadmat(self.datadir+filename)
         self.Bstim = Bmatdat['stim'][:, stim_trim]
-        self.dims = [2, 36, 1, 1]
+        self.dims = [1, 72, 1, 1]
         # Note Bstim is stored as numpy
 
         # Responses
@@ -149,13 +149,13 @@ class binocular_single(SensoryBase):
             #if self.speckled:
             #    out['Mval'] = self.Mval[idx, :]
             #    out['Mtrn'] = self.Mtrn[idx, :]
-        elif len(self.cells_out) == 1:
-                out = {
-                    'stim': self.stim[idx, :], 
-                    'robs': self.robs[idx, self.cells_out],
-                    'dfs': self.dfs[idx, self.cells_out]}
         else:
-            print("cells_out is wrong size (only accept len1")
+            robs_tmp =  self.robs[:, self.cells_out]
+            dfs_tmp =  self.dfs[:, self.cells_out]
+            out = {
+                    'stim': self.stim[idx, :], 
+                    'robs': robs_tmp[idx, :],
+                    'dfs': dfs_tmp[idx, :]}
 
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
