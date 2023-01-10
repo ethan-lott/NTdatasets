@@ -12,31 +12,27 @@ import NDNT.utils as utils
 #from NDNT.utils import download_file, ensure_dir
 from copy import deepcopy
 import h5py
-from NTdatasets.sensory_base import SensoryBase
 
-class MultiDataset(SensoryBase):
+class MultiDataset(Dataset):
     """
     MULTIDATASET can load batches from multiple datasets
     """
 
     def __init__(self,
-        filenames,
-        datadir=None,
-        #preload=False,
-        #num_lags=1,
-        #time_embed=True,
-        #includeMUs=False,
-        **kwargs):
+        sess_list,
+        dirname,
+        preload=False,
+        num_lags=1,
+        time_embed=True,
+        includeMUs=False,
+        device=None):
 
-        # call parent constructor
-        super().__init__(
-            filenames, datadir=datadir,
-            #num_lags=num_lags, time_embed=time_embed,
-            **kwargs)
-        #print( "Loading", self.datadir + self.filenames)
+        self.dirname = dirname
+        self.sess_list = sess_list
+        self.num_lags = num_lags
 
         # get hdf5 file handles
-        self.fhandles = [h5py.File(os.path.join(datadir, sess + '.hdf5'), 'r') for sess in self.filenames]
+        self.fhandles = [h5py.File(os.path.join(dirname, sess + '.hdf5'), 'r') for sess in self.sess_list]
 
         # build index map
         self.file_index = [] # which file the block corresponds to
@@ -44,34 +40,35 @@ class MultiDataset(SensoryBase):
         self.NTfile = []
 
         self.unit_ids = []
-        #self.includeMUs = include_MUs
-        #self.num_units, self.num_sus, self.num_mus = [], [], []
+        self.includeMUs = includeMUs
+        self.num_units, self.num_sus, self.num_mus, self.sus = [], [], [], []
         self.dims_file = []
 
-        if (self.device is not None) and (not self.preload):
+        if (device is not None) and (not preload):
             preload = True
             print("Warning: switching preload to True so device argument is meaningful.")
         
-        #self.preload = preload
-        #self.device = device
+        self.preload = preload
+        self.device = device
 
-        #self.NT = 0
-        #self.NC = 0
+        self.NT = 0
+        self.NC = 0
         self.num_blocks = 0
         self.block_assign = []
         self.block_grouping = []
         nfiles = 0
+        self.cells_out = None
 
         for f, fhandle in enumerate(self.fhandles):
             NTfile = fhandle['robs'].shape[0]
             NCfile = fhandle['robs'].shape[1]
             NMUfile = fhandle['robsMU'].shape[1]
-            self.num_SUs.append(NCfile)
-            self.num_MUs.append(NMUfile)
-            self.SUs = self.SUs + list(range(self.NC, self.NC+NCfile))
+            self.num_sus.append(NCfile)
+            self.num_mus.append(NMUfile)
+            self.sus = self.sus + list(range(self.NC, self.NC+NCfile))
 
             self.dims_file.append(fhandle['stim'].shape[1])
-            if self.include_MUs:
+            if includeMUs:
                 NCfile += NMUfile
             self.unit_ids.append(self.NC + np.asarray(range(NCfile)))
             
@@ -103,45 +100,40 @@ class MultiDataset(SensoryBase):
         # Set overall dataset variables
         NX = np.unique(np.asarray(self.dims_file)) # assumes they're all the same
         assert len(NX) == 1, 'problems'
-        self.dims = [1, NX[0], 1, 1]
-        if self.time_embed:
-            self.dims[-1] = self.num_lags
-        # For now do this without using assemble_stimlus
-        self.stim_dims = deepcopy(self.dims)
+        self.dims = [NX[0], 1, 1]
+        if time_embed:
+            self.dims[-1] = num_lags
 
-        if self.preload:
+        if preload:
             self.stim = np.zeros([self.NT, np.prod(self.dims)], dtype=np.float32)
             self.robs = np.zeros([self.NT, self.NC], dtype=np.float32)
             self.dfs = np.zeros([self.NT, self.NC], dtype=np.float32)
             tcount, ccount = 0, 0
             for f, fhandle in enumerate(self.fhandles):
-                print("Loading", self.filenames[f])
                 NT = fhandle['robs'].shape[0]
                 NC = fhandle['robs'].shape[1]
                 trange = range(tcount, tcount+NT)
                 crange = range(ccount, ccount+NC)
                 
                 # Stimulus
-                if not self.time_embed:
+                if not time_embed:
                     self.stim[trange, :] = np.array(self.fhandles[f]['stim'], dtype='float32')
                 else:
                     # Time embed stimulus -- simple way
-                    #idx = np.arange(NT)
-                    #tmp = np.array(self.fhandles[f]['stim'], dtype='float32')
-                    #self.stim[trange, :] = np.reshape( 
-                    #    np.transpose(
-                    #        tmp[np.arange(NT)[:,None]-np.arange(self.num_lags), :], 
-                    #        [0,2,1]),
-                    #    [NT, -1])
-                    self.stim[trange, :] = self.time_embedding(
-                        stim=np.array(self.fhandles[f]['stim'], dtype='float32'))
+                    idx = np.arange(NT)
+                    tmp = np.array(self.fhandles[f]['stim'], dtype='float32')
+                    self.stim[trange, :] = np.reshape( 
+                        np.transpose(
+                            tmp[np.arange(NT)[:,None]-np.arange(self.num_lags), :], 
+                            [0,2,1]),
+                        [NT, -1])
 
                 # Robs and DFs
                 robs_tmp = np.zeros([NT, self.NC], dtype=np.float32)
                 dfs_tmp = np.zeros([NT, self.NC], dtype=np.float32)
                 robs_tmp[:, crange] = np.array(self.fhandles[f]['robs'], dtype='float32')
                 dfs_tmp[:, crange] = np.array(self.fhandles[f]['dfs'], dtype='float32')
-                if self.include_MUs:
+                if includeMUs:
                     NMU = fhandle['robsMU'].shape[1]
                     crange = range(ccount+NC, ccount+NC+NMU)
                     NC += NMU
@@ -156,7 +148,7 @@ class MultiDataset(SensoryBase):
             # Convert data to tensor
             self.to_tensor()
 
-        self.SUs = np.array(self.SUs, dtype=np.int64)
+        self.sus = np.array(self.sus, dtype=np.int64)
         # Set average rates across dataset (so can be quickly accessed)
         self.avRs = None  # need to set to None so can will pre-calculate
         self.avRs = self.avrates()
@@ -235,7 +227,7 @@ class MultiDataset(SensoryBase):
             robs = torch.cat(robs, dim=0)
             dfs = torch.cat(dfs, dim=0)
 
-        if len(self.cells_out) > 0:
+        if self.cells_out is not None:
             cells_out = np.array(self.cells_out, dtype=np.int64)
             assert len(cells_out) > 0, "DATASET: cells_out must be a non-zero length"
             assert np.max(cells_out) < self.robs.shape[1],  "DATASET: cells_out must be a non-zero length"

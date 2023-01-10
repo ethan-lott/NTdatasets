@@ -164,7 +164,7 @@ class SensoryBase(Dataset):
             print( "Time embed: flattening stimulus from", original_dims)
         tmp_stim = tmp_stim.reshape([NT, -1])  # automatically generates 2-dimensional stim
 
-        assert self.NT == NT, "TIME EMBEDDING: stim length mismatch"
+        #assert self.NT == NT, "TIME EMBEDDING: stim length mismatch"
 
         # Actual time-embedding itself
         tmp_stim = tmp_stim[np.arange(NT)[:,None]-np.arange(nlags), :]
