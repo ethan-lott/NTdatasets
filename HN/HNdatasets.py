@@ -343,3 +343,106 @@ class HNdataset(SensoryBase):
         return out
     # END HNdata.__getitem()
     
+
+class MotionNeural(SensoryBase):
+
+    def __init__(self, filename=None, num_lags=10, **kwargs):
+        """
+        Inputs: 
+            filename: currently the pre-processed matlab file from Dan's old-style format
+            datadir: directory for data (goes directly into SensoryBase)
+            **kwargs: non-dataset specific arguments that get passed into SensoryBase
+            """
+
+        # call parent constructor
+        super().__init__(filename, **kwargs)
+        matdat = sio.loadmat(self.datadir+filename)
+        print('Loaded ' + filename)
+
+        # essential variables
+        self.robs = torch.tensor( matdat['robs'], dtype=torch.float32)
+        self.NT = len(self.robs)
+        self.dfs = torch.tensor( matdat['rf_criteria'], dtype=torch.float32)
+        self.NC = self.robs.shape[1]
+
+        # Use stim onsets for stim timing (starts with black)
+        self.stimB = matdat['stimB'][:, 0].astype(np.float32)
+        self.stimW = matdat['stimW'][:, 0].astype(np.float32)
+        self.stimts = np.where(np.diff(self.stimB) > 0)[0] + 1
+        self.flash_stim = torch.zeros([self.NT, 1], dtype=torch.float32)
+        self.flash_stim[self.stimts] = 1.0
+        self.dims = [1, 1, 1, 1]
+
+        # Make trial block and classify trials
+        blocks = matdat['blocks']-1  # Convert to python indexing
+        trial_type_t = matdat['trial_type'][:, 0]
+        Ntr = len(blocks)
+        trial_type = np.zeros(Ntr, dtype=np.float32) # 1=free viewing, 2=fixation
+        for bb in range(Ntr):
+            if bb < Ntr-1:
+                self.block_inds.append( np.arange(blocks[bb], blocks[bb+1]) )
+            else:
+                self.block_inds.append( np.arange(blocks[bb], self.NT) )
+            trial_type[bb] = np.median(trial_type_t[self.block_inds[bb]])
+
+        # Mask out blinks using data_filters +/ 4 frames around each blink
+        self.blinks = matdat['blinks'][:, 0].astype(np.float32)
+        valid_data = 1-self.blinks
+        blink_onsets = np.where(np.diff(self.blinks) > 0)[0] + 1
+        blink_offsets = np.where(np.diff(self.blinks) > 0)[0] + 1
+        for ii in range(len(blink_onsets)):
+            valid_data[range( np.maximum(0, blink_onsets[ii]-4), np.minimum(self.NT, blink_offsets[ii]+4) )] = 0.0
+        self.dfs *= valid_data[:, None]
+    
+        # Saccades
+        self.saccades = matdat['saccades'][:, 0]
+        saccade_onsets = np.where(np.diff(self.saccades) > 0)[0] + 1
+        saccade_offsets = np.where(np.diff(self.saccades) > 0)[0] + 1
+        self.sacc_on = torch.zeros( [self.NT, 1], dtype=torch.float32)
+        self.sacc_on[saccade_onsets] = 1.0
+        self.sacc_off = torch.zeros( [self.NT, 1], dtype=torch.float32)
+        self.sacc_off[saccade_offsets] = 1.0
+
+        # Non-essential
+        self.eye_pos = matdat['eye_pos']
+        self.eye_speed = matdat['eye_speed'][:, 0]
+        self.framerate = matdat['framerate'][0, 0]
+
+        # Make drift term -- need anchors at every other cycle
+        transitions = np.where(abs(np.diff(trial_type)) > 0)[0] + 1
+        drift_anchors = [0] + list(transitions[np.arange(1,len(transitions),2)]) # every other transition
+        self.construct_drift_design_matrix( block_anchors=drift_anchors)
+    
+        self.crossval_setup(test_set=False)
+
+        if num_lags is not None:
+            self.assemble_stimulus(num_lags=num_lags)
+    # END MotionNeural.__init__
+
+    def assemble_stimulus(self, num_lags=10 ):
+        self.stim_dims = [1, 1, 1, 1]
+        self.stim = self.time_embedding( stim=self.flash_stim, nlags=num_lags)
+        self.num_lags = num_lags
+    # END MotionNeural.assemble_stimulus()
+
+    def __getitem__(self, idx):
+
+        if len(self.cells_out) == 0:
+            out = {
+                'stim': self.stim[idx, :],
+                'robs': self.robs[idx, :],
+                'dfs': self.dfs[idx, :]}
+        else:
+            assert isinstance(self.cells_out, list), 'cells_out must be a list'
+            robs_tmp =  self.robs[:, self.cells_out]
+            dfs_tmp =  self.dfs[:, self.cells_out]
+            out = {'stim': self.stim[idx, :],
+                'robs': robs_tmp[idx, :],
+                'dfs': dfs_tmp[idx, :]}
+        
+        out['sacc_on'] = self.sacc_on[idx, :]
+        out['sacc_off'] = self.sacc_off[idx, :]
+        out['Xdrift'] = self.Xdrift[idx, :]
+
+        return(out)
+    # END MotionNeural.__get_item__()

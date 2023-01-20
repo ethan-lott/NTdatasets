@@ -169,7 +169,7 @@ class SensoryBase(Dataset):
         # Actual time-embedding itself
         tmp_stim = tmp_stim[np.arange(NT)[:,None]-np.arange(nlags), :]
         tmp_stim = torch.permute( tmp_stim, (0,2,1) ).reshape([NT, -1])
-
+        print( "  Done.")
         return tmp_stim
     # END SensoryBase.time_embedding()
 
@@ -292,7 +292,8 @@ class SensoryBase(Dataset):
             return None
     # END .avrates()
 
-    def crossval_setup(self, folds=5, random_gen=False, test_set=True, verbose=False):
+
+    def crossval_setup(self, folds=5, random_gen=False, test_set=False, verbose=False):
         """This sets the cross-validation indices up We can add featuers here. Many ways to do this
         but will stick to some standard for now. It sets the internal indices, which can be read out
         directly or with helper functions. Perhaps helper_functions is the best way....
@@ -303,47 +304,51 @@ class SensoryBase(Dataset):
         Outputs:
             None: sets internal variables test_inds, train_inds, val_inds
         """
-        assert self.valid_inds is not None, "Must first specify valid_indices before setting up cross-validation."
+        assert self.used_inds is not None, "Must first specify valid_indices before setting up cross-validation."
 
-        # Partition data by saccades, and then associate indices with each
-        te_fixes, tr_fixes, val_fixes = [], [], []
-        for ee in range(len(self.fixation_grouping)):  # Loops across experiments
-            fixations = np.array(self.fixation_grouping[ee])  # fixations associated with each experiment
-            val_fix1, tr_fix1 = self.fold_sample(len(fixations), folds, random_gen=random_gen)
-            if test_set:
-                te_fixes += list(fixations[val_fix1])
-                val_fix2, tr_fix2 = self.fold_sample(len(tr_fix1), folds, random_gen=random_gen)
-                val_fixes += list(fixations[tr_fix1[val_fix2]])
-                tr_fixes += list(fixations[tr_fix1[tr_fix2]])
-            else:
-                val_fixes += list(fixations[val_fix1])
-                tr_fixes += list(fixations[tr_fix1])
+        # Reflect block structure
+        Nblks = len(self.block_inds)
+        val_blk1, tr_blk1 = self.fold_sample(Nblks, folds, random_gen=random_gen)
+
+        if test_set:
+            self.test_blks = val_blk1
+            val_blk2, tr_blk2 = self.fold_sample(len(tr_blk1), folds, random_gen=random_gen)
+            self.val_blks = tr_blk1[val_blk2]
+            self.train_blks = tr_blk1[tr_blk2]
+        else:
+            self.val_blks = val_blk1
+            self.train_blks = tr_blk1
+            self.test_blks = []
 
         if verbose:
             print("Partitioned %d fixations total: tr %d, val %d, te %d"
-                %(len(te_fixes)+len(tr_fixes)+len(val_fixes),len(tr_fixes), len(val_fixes), len(te_fixes)))  
+                %(len(self.test_blks)+len(self.train_blks)+len(self.val_blks),len(self.train_blks), len(self.val_blks), len(self.test_blks)))  
 
-        # Now pull  indices from each saccade 
+        # Now pull indices from each saccade 
         tr_inds, te_inds, val_inds = [], [], []
-        for nn in tr_fixes:
-            tr_inds += range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])
-        for nn in val_fixes:
-            val_inds += range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])
-        for nn in te_fixes:
-            te_inds += range(self.sacc_inds[nn][0], self.sacc_inds[nn][1])
+        for nn in self.train_blks:
+            tr_inds += list(deepcopy(self.block_inds[nn]))
+        for nn in self.val_blks:
+            val_inds += list(deepcopy(self.block_inds[nn]))
+        for nn in self.test_blks:
+            te_inds += list(deepcopy(self.block_inds[nn]))
 
         if verbose:
             print( "Pre-valid data indices: tr %d, val %d, te %d" %(len(tr_inds), len(val_inds), len(te_inds)) )
 
-        # Finally intersect with valid indices
-        self.train_inds = np.array(list(set(tr_inds) & set(self.valid_inds)))
-        self.val_inds = np.array(list(set(val_inds) & set(self.valid_inds)))
-        self.test_inds = np.array(list(set(te_inds) & set(self.valid_inds)))
+        # Finally intersect with used_inds
+        if len(self.used_inds) > 0:
+            self.train_inds = np.array(list(set(tr_inds) & set(self.used_inds)))
+            self.val_inds = np.array(list(set(val_inds) & set(self.used_inds)))
+            self.test_inds = np.array(list(set(te_inds) & set(self.used_inds)))
 
-        if verbose:
-            print( "Valid data indices: tr %d, val %d, te %d" %(len(self.train_inds), len(self.val_inds), len(self.test_inds)) )
-
-    # END MultiDatasetFix.crossval_setup
+            if verbose:
+                print( "Valid data indices: tr %d, val %d, te %d" %(len(self.train_inds), len(self.val_inds), len(self.test_inds)) )
+        else:
+            self.train_inds = tr_inds
+            self.val_inds = val_inds
+            self.test_inds = te_inds
+    # END SensoryBase.crossval_setup
 
     def fold_sample( self, num_items, folds, random_gen=False, which_fold=None):
         """This really should be a general method not associated with self"""
