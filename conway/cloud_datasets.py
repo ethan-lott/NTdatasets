@@ -201,8 +201,9 @@ class ColorClouds(SensoryBase):
         self.LRpresent = LRpresent
 
         # Make binocular gain term
-        self.binocular_gain = torch.zeros( len(LRpresent), dtype=torch.float32 )
-        self.binocular_gain[self.LRpresent == 3] = 1.0
+        self.binocular_gain = torch.zeros( [len(LRpresent), 2], dtype=torch.float32 )
+        self.binocular_gain[self.LRpresent == 1, 0] = 1.0
+        self.binocular_gain[self.LRpresent == 2, 1] = 1.0
 
         if preload:
             print("Loading data into memory...")
@@ -247,7 +248,7 @@ class ColorClouds(SensoryBase):
             self.robs = self.robs[ts, :]
             self.dfs = self.dfs[ts, :]
             self.LRpresent = self.LRpresent[ts]
-            self.binocular_gain = self.binocular_gain[ts]
+            self.binocular_gain = self.binocular_gain[ts, :]
 
             self.NT = len(ts)
 
@@ -256,7 +257,7 @@ class ColorClouds(SensoryBase):
             # Only keep valid blocks/saccades
             blk_inds = blk_inds - t0 
             blk_inds = blk_inds[ blk_inds[:, 0] >= 0, :]
-            blk_inds = blk_inds[ blk_inds[:, 1] < self.NT, :]  
+            blk_inds = blk_inds[ blk_inds[:, 1] <= self.NT, :]  
             self.sacc_inds = self.sacc_inds - t0
             self.sacc_inds = self.sacc_inds[ self.sacc_inds[:, 0] >= 0, :]  
             self.sacc_inds = self.sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
@@ -265,10 +266,14 @@ class ColorClouds(SensoryBase):
         for ii in range(blk_inds.shape[0]):
             # note this will be the inds in each file -- file offset must be added for mult files
             self.block_inds.append( np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64) )
+        # go to end of time range if extends beyond block range
+        if self.block_inds[ii,1] < self.NT:
+            print('Extending final block at ', self.block_inds[ii,1], self.NT)
+            self.block_inds.append( np.arange(self.block_inds[-1,1], self.NT))
+            # This is to fix zeroing of last block in fix_n.... (I think?)
 
         self.process_fixations()
 
-        print(self.drift_interval)
         ### Construct drift term if relevant
         if self.drift_interval is None:
             self.Xdrift = None
@@ -360,7 +365,7 @@ class ColorClouds(SensoryBase):
                 if self.luminance_only:
                     self.stimLP[inds, 0, ...] = np.array(fhandle['stim'], dtype=np.float32)[:, 0, ...]
                     if self.stimET is not None:
-                        print(np.array(fhandle['stimET'], dtype=np.float32).shape, self.stimET[inds, 0, ...].shape)
+                        #print(np.array(fhandle['stimET'], dtype=np.float32).shape, self.stimET[inds, 0, ...].shape)
                         self.stimET[inds, 0, ...] = np.array(fhandle['stimET'], dtype=np.float32)[:, 0, ...]
                 else:
                     self.stimLP[inds, ...] = np.array(fhandle['stim'], dtype=np.float32)
@@ -418,6 +423,7 @@ class ColorClouds(SensoryBase):
         top_corner=None, L=None,  # position of stim
         time_embed=0, num_lags=10,
         shifts=None, BUF=20, # shift buffer
+        shift_times=None, # So that can put partial-shifts over time range in stimulus
         fixdot=0 ):
         """This assembles a stimulus from the raw numpy-stored stimuli into self.stim
         which_stim: determines what stimulus is assembled from 'ET'=0, 'lam'=1, None
@@ -528,7 +534,10 @@ class ColorClouds(SensoryBase):
         if self.stim_shifts is not None:
             # Would want to shift by input eye positions if input here
             #print('eye-position shifting not implemented yet')
-            self.stim = self.shift_stim( shifts, already_lagged=False )
+            if shift_times is None:
+                self.stim = self.shift_stim( shifts, shift_times=shift_times, already_lagged=False )
+            else:
+                self.stim[shift_times, ...] = self.shift_stim( shifts, shift_times=shift_times, already_lagged=False )
 
         # Reduce size back to original If expanded to handle shifts
         if need2crop:
@@ -844,8 +853,11 @@ class ColorClouds(SensoryBase):
             return None
     # END .avrates()
 
-    def shift_stim(self, pos_shifts, metrics=None, metric_threshold=1, ts_thresh=8, already_lagged=True ):
-        """Shift stimulus given standard shifting input (TBD)"""
+    def shift_stim(
+        self, pos_shifts, metrics=None, metric_threshold=1, ts_thresh=8,
+        shift_times=None, already_lagged=True ):
+        """Shift stimulus given standard shifting input (TBD)
+        use 'shift-times' if given shifts correspond to range of times"""
         NX = self.stim_dims[1]
         nlags = self.stim_dims[3]
 
@@ -857,7 +869,18 @@ class ColorClouds(SensoryBase):
             assert len(self.stim) > 2, "Should be already lagged, but seems not"
             re_stim = deepcopy(self.stim)
 
-        fix_n = np.array(self.fix_n, dtype=np.int64)
+        # Apply shift-times (subset)
+        if shift_times is None:
+            fix_n = np.array(self.fix_n, dtype=np.int64)
+        else:
+            fix_n = np.array(self.fix_n[shift_times], dtype=np.int64)
+            # Find minimum fix_n and make = 1
+            min_fix_n = np.min(fix_n[fix_n > 0])
+            #print('min_fix_n', min_fix_n, 'adjust', 1-min_fix_n)
+            fix_n[fix_n > 0] += 1-min_fix_n
+            re_stim = re_stim[:len(shift_times), ...]
+            #print('max fix', np.max(fix_n), fix_n.shape)
+        
         NF = np.max(fix_n)
         NTtmp = re_stim.shape[0]
         nclr = self.stim_dims[0]
@@ -910,6 +933,7 @@ class ColorClouds(SensoryBase):
             return np.transpose( laggedstim, axes=[0,2,3,4,1] )
         else:
             return sp_stim
+    # END ColorCloud.shift_stim -- note outputs stim rather than overwrites
 
     def shift_stim_fixation( self, stim, shift):
         """Simple shift by integer (rounded shift) and zero padded. Note that this is not in 
@@ -1118,7 +1142,7 @@ class ColorClouds(SensoryBase):
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
         if self.binocular:
-            out['binocular'] = self.binocular_gain[idx]
+            out['binocular'] = self.binocular_gain[idx, :]
             
         ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)

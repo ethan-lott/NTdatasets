@@ -196,8 +196,48 @@ class SensoryBase(Dataset):
             dtype=torch.float32)
     # END SenspryBase.construct_drift_design_matrix()
 
+    def trial_psths( self, trials=None, R=None ):
+        """Computes average firing rate of cells_out at bin-resolution, averaged across trials
+        given in block_inds"""
+
+        Ntr = len(self.block_inds)
+        assert Ntr > 0, "Cannot compute PSTHs without block_inds established in dataset."
+
+        if len(self.cells_out) > 0:
+            ccs = self.cells_out
+        else:
+            ccs = np.arange(self.NC)
+        dfs = self.dfs[:, ccs].detach().numpy()
+
+        if R is None:  #then use [internal] Robs
+            R = deepcopy( self.robs[:, ccs].detach().numpy() )  
+        if len(R.shape) == 1:
+            R = R[:, None]         
+        num_psths = R.shape[1]  # otherwise use existing input
+
+        # Compute minimum trial size
+        T = len(self.block_inds[0])
+        for bb in range(1, Ntr):
+            if len(self.block_inds[bb]) > T:
+                T = len(self.block_inds[bb])
+        psths = np.zeros([T, num_psths])
+        df_count = np.zeros([T, num_psths])
+
+        if trials is None:
+            trials = np.arange(Ntr)
+
+        if len(trials) > 0:
+            for ii in trials:
+                psths += R[self.block_inds[ii][:T], :] * dfs[self.block_inds[ii][:T], :]
+                df_count += dfs[self.block_inds[ii][:T], :]
+            
+            psths = np.divide( psths, np.maximum(df_count, 1.0) )
+
+        return psths
+    # END SensoryBase.calculate_psths()
+
     @staticmethod
-    def design_matrix_drift( NT, anchors, zero_left=True, zero_right=False, const_right=False, to_plot=False):
+    def design_matrix_drift( NT, anchors, zero_left=True, zero_right=False, const_left=False, const_right=False, to_plot=False):
         """Produce a design matrix based on continuous data (s) and anchor points for a tent_basis.
         Here s is a continuous variable (e.g., a stimulus) that is function of time -- single dimension --
         and this will generate apply a tent basis set to s with a basis variable for each anchor point. 
@@ -213,7 +253,8 @@ class SensoryBase(Dataset):
         """
         anchors = list(anchors)
         if anchors[0] > 0:
-            anchors = [0] + anchors
+            if not const_left:
+                anchors = [0] + anchors
         #if anchors[-1] < NT:
         #    anchors = anchors + [NT]
         NA = len(anchors)
@@ -229,6 +270,8 @@ class SensoryBase(Dataset):
 
         if zero_left:
             X = X[:, 1:]
+        elif const_left:  # makes constant from first anchor back to origin -- wont work without zero-left
+            X[range(anchors[0]), 0] = 1.0
 
         if const_right:
             X[range(anchors[-1], NT), -1] = 1.0

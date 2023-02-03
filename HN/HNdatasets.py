@@ -248,31 +248,32 @@ class HNdataset(SensoryBase):
         self.ACinput *= self.dfs[:, cells]
     # END autoencoder_design_matrix
 
-    def trial_psths( self, trials=None, R=None ):
-        """Computes average firing rate of cells_out at bin-resolution"""
-
-        if R is None:  #then use [internal] Robs
-            if len(self.cells_out) > 0:
-                ccs = self.cells_out
-            else:
-                ccs = np.arange(self.NC)
-            R = deepcopy( self.robs[:, ccs].detach().numpy() )  
-        if len(R.shape) == 1:
-            R = R[:, None]         
-        num_psths = R.shape[1]  # otherwise use existing input
-
-        T = self.min_trial_size
-        psths = np.zeros([T, num_psths])
-
-        if trials is None:
-            trials = np.arange(self.Ntr)
-
-        if len(trials) > 0:
-            for ii in trials:
-                psths += R[self.block_inds[ii][:T]]
-            psths *= 1.0/len(trials)
-
-        return psths
+    # Moved to SensoryBase
+    #def trial_psths( self, trials=None, R=None ):
+    #    """Computes average firing rate of cells_out at bin-resolution"""
+    #
+    #    if R is None:  #then use [internal] Robs
+    #        if len(self.cells_out) > 0:
+    #            ccs = self.cells_out
+    #        else:
+    #            ccs = np.arange(self.NC)
+    #        R = deepcopy( self.robs[:, ccs].detach().numpy() )  
+    #    if len(R.shape) == 1:
+    #        R = R[:, None]         
+    #    num_psths = R.shape[1]  # otherwise use existing input
+    #
+    #    T = self.min_trial_size
+    #    psths = np.zeros([T, num_psths])
+    #
+    #    if trials is None:
+    #        trials = np.arange(self.Ntr)
+    #
+    #    if len(trials) > 0:
+    #        for ii in trials:
+    #            psths += R[self.block_inds[ii][:T]]
+    #        psths *= 1.0/len(trials)
+    #
+    #    return psths
     # END HNdataset.calculate_psths()
 
     @staticmethod
@@ -346,7 +347,7 @@ class HNdataset(SensoryBase):
 
 class MotionNeural(SensoryBase):
 
-    def __init__(self, filename=None, num_lags=10, **kwargs):
+    def __init__(self, filename=None, num_lags=30, tr_gap=10, **kwargs):
         """
         Inputs: 
             filename: currently the pre-processed matlab file from Dan's old-style format
@@ -368,22 +369,24 @@ class MotionNeural(SensoryBase):
         # Use stim onsets for stim timing (starts with black)
         self.stimB = matdat['stimB'][:, 0].astype(np.float32)
         self.stimW = matdat['stimW'][:, 0].astype(np.float32)
+        self.trial_stim = matdat['trial_stim'].astype(np.float32)
         self.stimts = np.where(np.diff(self.stimB) > 0)[0] + 1
         self.flash_stim = torch.zeros([self.NT, 1], dtype=torch.float32)
         self.flash_stim[self.stimts] = 1.0
         self.dims = [1, 1, 1, 1]
+        self.Xadapt = None
 
         # Make trial block and classify trials
         blocks = matdat['blocks']-1  # Convert to python indexing
         trial_type_t = matdat['trial_type'][:, 0]
         Ntr = len(blocks)
-        trial_type = np.zeros(Ntr, dtype=np.float32) # 1=free viewing, 2=fixation
+        self.trial_type = np.zeros(Ntr, dtype=np.int64) # 1=free viewing, 2=fixation
         for bb in range(Ntr):
             if bb < Ntr-1:
                 self.block_inds.append( np.arange(blocks[bb], blocks[bb+1]) )
             else:
                 self.block_inds.append( np.arange(blocks[bb], self.NT) )
-            trial_type[bb] = np.median(trial_type_t[self.block_inds[bb]])
+            self.trial_type[bb] = np.median(trial_type_t[self.block_inds[bb]])
 
         # Mask out blinks using data_filters +/ 4 frames around each blink
         self.blinks = matdat['blinks'][:, 0].astype(np.float32)
@@ -393,11 +396,14 @@ class MotionNeural(SensoryBase):
         for ii in range(len(blink_onsets)):
             valid_data[range( np.maximum(0, blink_onsets[ii]-4), np.minimum(self.NT, blink_offsets[ii]+4) )] = 0.0
         self.dfs *= valid_data[:, None]
-    
+        if tr_gap > 0:
+            for bb in range(Ntr):
+                self.dfs[self.block_inds[bb][:tr_gap], :] = 0.0
+
         # Saccades
-        self.saccades = matdat['saccades'][:, 0]
+        self.saccades = matdat['saccades'][:, 0].astype(np.float32)
         saccade_onsets = np.where(np.diff(self.saccades) > 0)[0] + 1
-        saccade_offsets = np.where(np.diff(self.saccades) > 0)[0] + 1
+        saccade_offsets = np.where(np.diff(self.saccades) < 0)[0] + 1
         self.sacc_on = torch.zeros( [self.NT, 1], dtype=torch.float32)
         self.sacc_on[saccade_onsets] = 1.0
         self.sacc_off = torch.zeros( [self.NT, 1], dtype=torch.float32)
@@ -409,7 +415,7 @@ class MotionNeural(SensoryBase):
         self.framerate = matdat['framerate'][0, 0]
 
         # Make drift term -- need anchors at every other cycle
-        transitions = np.where(abs(np.diff(trial_type)) > 0)[0] + 1
+        transitions = np.where(abs(np.diff(self.trial_type)) > 0)[0] + 1
         drift_anchors = [0] + list(transitions[np.arange(1,len(transitions),2)]) # every other transition
         self.construct_drift_design_matrix( block_anchors=drift_anchors)
     
@@ -419,11 +425,49 @@ class MotionNeural(SensoryBase):
             self.assemble_stimulus(num_lags=num_lags)
     # END MotionNeural.__init__
 
-    def assemble_stimulus(self, num_lags=10 ):
-        self.stim_dims = [1, 1, 1, 1]
-        self.stim = self.time_embedding( stim=self.flash_stim, nlags=num_lags)
+    def assemble_stimulus(self, which_stim='all', use_trial_type=False, num_lags=180 ):
+        """
+        'which_stim' could be 'trial' (default) using just the first stim onset" or could
+        mark each flash (calling 'which_stim' anything else), although this would not implicitly 
+        take things like adapation into account
+        'use_trial_type' could fit different stim responses in the two conditions to gauge the effects"""
+
         self.num_lags = num_lags
+        if which_stim == 'trial':
+            stim = self.trial_stim
+        else:
+            stim = self.flash_stim.detach().numpy()
+
+        if use_trial_type:
+            self.stim_dims = [2, 1, 1, 1]
+            stim2 = np.concatenate( (deepcopy(stim), deepcopy(stim)), axis=1)
+            for bb in range(len(self.block_inds)):
+                stim2[self.block_inds[bb], self.trial_type[bb]-1] = 0.0
+                # this will have stim present in 0 for fixation and 1 for free viewing
+            self.stim = self.time_embedding( stim=stim2, nlags=num_lags)
+        else:
+            self.stim_dims = [1, 1, 1, 1]
+            self.stim = self.time_embedding( stim=stim, nlags=num_lags)
     # END MotionNeural.assemble_stimulus()
+
+    def construct_Xadapt( self, tent_start=18+8, tent_spacing=20 ):
+        """Constructs adaptation-within-trial tent function
+        Inputs: 
+            """
+        # Put first anchor 
+        anchors = tent_start + tent_spacing*np.arange(0, 6)  # 5 pulses (ignoring first)
+
+        # Generate master tent_basis
+        trial_tents = self.design_matrix_drift(
+            len(self.block_inds[0]), anchors, zero_left=True, const_left=True, zero_right=False, const_right=True)
+        num_tents = trial_tents.shape[1]
+
+        self.Xadapt = torch.zeros((self.NT, num_tents), dtype=torch.float32)
+
+        for tr in range(len(self.block_inds)):
+            L = len(self.block_inds[tr])
+            self.Xadapt[self.block_inds[tr], :] = torch.tensor(trial_tents[:L, :], dtype=torch.float32)
+    # END MotionNeural.construct_Xadapt()
 
     def __getitem__(self, idx):
 
@@ -432,6 +476,10 @@ class MotionNeural(SensoryBase):
                 'stim': self.stim[idx, :],
                 'robs': self.robs[idx, :],
                 'dfs': self.dfs[idx, :]}
+            if self.speckled:
+                out['Mval'] = self.Mval[idx, :]
+                out['Mtrn'] = self.Mtrn[idx, :]
+
         else:
             assert isinstance(self.cells_out, list), 'cells_out must be a list'
             robs_tmp =  self.robs[:, self.cells_out]
@@ -439,10 +487,20 @@ class MotionNeural(SensoryBase):
             out = {'stim': self.stim[idx, :],
                 'robs': robs_tmp[idx, :],
                 'dfs': dfs_tmp[idx, :]}
+            if self.speckled:
+                M1tmp = self.Mval[:, self.cells_out]
+                M2tmp = self.Mtrn[:, self.cells_out]
+                out['Mval'] = M1tmp[idx, :]
+                out['Mtrn'] = M2tmp[idx, :]
         
         out['sacc_on'] = self.sacc_on[idx, :]
         out['sacc_off'] = self.sacc_off[idx, :]
         out['Xdrift'] = self.Xdrift[idx, :]
+        if self.Xadapt is not None:
+            out['Xadapt'] = self.Xadapt[idx, :]
+
+        if len(self.covariates) > 0:
+            self.append_covariates( out, idx)
 
         return(out)
     # END MotionNeural.__get_item__()
