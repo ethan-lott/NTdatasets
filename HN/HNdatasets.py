@@ -355,12 +355,12 @@ class MotionNeural(SensoryBase):
             **kwargs: non-dataset specific arguments that get passed into SensoryBase
             """
 
-        # call parent constructor
+        # Call parent constructor
         super().__init__(filename, **kwargs)
         matdat = sio.loadmat(self.datadir+filename)
         print('Loaded ' + filename)
 
-        # essential variables
+        # Essential variables
         self.robs = torch.tensor( matdat['robs'], dtype=torch.float32)
         self.NT = len(self.robs)
         self.dfs = torch.tensor( matdat['rf_criteria'], dtype=torch.float32)
@@ -413,6 +413,8 @@ class MotionNeural(SensoryBase):
         self.eye_pos = matdat['eye_pos']
         self.eye_speed = matdat['eye_speed'][:, 0]
         self.framerate = matdat['framerate'][0, 0]
+        # Bharath's used time points
+        self.BTtimepts = matdat['timepts2use'][0, :]-1 # Convert to python indexing
 
         # Make drift term -- need anchors at every other cycle
         transitions = np.where(abs(np.diff(self.trial_type)) > 0)[0] + 1

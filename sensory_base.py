@@ -118,7 +118,7 @@ class SensoryBase(Dataset):
     def prepare_stim( self ):
         print('Default prepare stimulus method.')
 
-    def set_cells( self, cell_list=None):
+    def set_cells( self, cell_list=None, verbose=True):
         """Set outputs to potentially limit robs/dfs to certain cells 
         This sets cells_out but also constructs efficient data structures"""
         if cell_list is None:
@@ -134,6 +134,8 @@ class SensoryBase(Dataset):
                 else:
                     cell_list = list(cell_list)
             assert np.max(np.array(cell_list)) < self.NC, "ERROR: cell_list too high."
+            if verbose:
+                print("Output set to %d cells"%len(cell_list))
             self.cells_out = cell_list
             self.robs_out = deepcopy(self.robs[:, cell_list])
             self.dfs_out = deepcopy(self.dfs[:, cell_list])

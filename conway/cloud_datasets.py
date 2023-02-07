@@ -75,6 +75,7 @@ class ColorClouds(SensoryBase):
         self.binocular = binocular
         self.luminance_only = luminance_only
         self.generate_Xfix = False
+        self.output_separate_eye_stim = False
 
         self.start_t = 0
         self.drift_interval = drift_interval
@@ -267,9 +268,9 @@ class ColorClouds(SensoryBase):
             # note this will be the inds in each file -- file offset must be added for mult files
             self.block_inds.append( np.arange( blk_inds[ii,0], blk_inds[ii,1], dtype=np.int64) )
         # go to end of time range if extends beyond block range
-        if self.block_inds[ii,1] < self.NT:
-            print('Extending final block at ', self.block_inds[ii,1], self.NT)
-            self.block_inds.append( np.arange(self.block_inds[-1,1], self.NT))
+        if blk_inds[ii,1] < self.NT:
+            print('Extending final block at ', blk_inds[ii,1], self.NT)
+            self.block_inds.append( np.arange(blk_inds[-1,1], self.NT))
             # This is to fix zeroing of last block in fix_n.... (I think?)
 
         self.process_fixations()
@@ -1105,7 +1106,12 @@ class ColorClouds(SensoryBase):
                         'robs': robs_tmp[idx, :],
                         'dfs': dfs_tmp[idx, :],
                         'fix_n': self.fix_n[idx]}
-            
+                if self.binocular and self.output_separate_eye_stim:
+                    # Overwrite left stim with left eye only
+                    tmp_dims = out['stim'].shape[-1]//2
+                    stim_tmp = self.stim[idx, :].reshape([-1, 2, tmp_dims])
+                    out['stim'] = stim_tmp[:, 0, :]
+                    out['stimR'] = stim_tmp[:, 1, :]            
         else:
             inds = self.valid_inds[idx]
             stim = []
