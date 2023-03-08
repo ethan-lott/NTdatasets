@@ -674,7 +674,10 @@ class BarET(SensoryBase):
 
                     out['robs'] = robs_tmp[idx, :]
                     out['dfs'] = dfs_tmp[idx, :]
-            
+
+            if len(self.covariates) > 0:
+                self.append_covariates( out, idx)
+
         else:
             inds = self.valid_inds[idx]
             stim, stimV = [], []
@@ -719,6 +722,9 @@ class BarET(SensoryBase):
             assert self.shifts is not None, "DATASET: shifts missing but 'with_shifter' is true" 
             out['shifts'] = self.shifts[idx]
             
+        if len(self.covariates) > 0:
+            self.append_covariates( out, idx)
+
         return out                
 # END BarET Dataset
 
@@ -1468,6 +1474,10 @@ class Bar1Dv7(Dataset):
                     dfs_tmp = self.dfs[:, self.cells_out]
                     out['robs'] = robs_tmp[idx, :]
                     out['dfs'] = dfs_tmp[idx, :]
+
+            if len(self.covariates) > 0:
+                self.append_covariates( out, idx)
+
             
         else:
             inds = self.valid_inds[idx]
@@ -1512,7 +1522,10 @@ class Bar1Dv7(Dataset):
         if self.with_shifter:
             assert self.shifts is not None, "DATASET: shifts missing but 'with_shifter' is true" 
             out['shifts'] = self.shifts[idx]
-            
+
+        if len(self.covariates) > 0:
+            self.append_covariates( out, idx)
+
         return out                
 
     def __len__(self):
