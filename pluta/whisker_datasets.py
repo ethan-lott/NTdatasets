@@ -19,7 +19,8 @@ class WhiskerData(SensoryBase):
         super().__init__(filenames=expt_name, num_lags=num_lags, **kwargs)
         #self.expt_name = expt_name
 
-        ExptMat = sio.loadmat( self.datadir+expt_name+'/ExpInfo.mat')['ExpInfo_dat']
+        matdat = sio.loadmat( self.datadir+expt_name+'/ExpInfo.mat')
+        ExptMat = matdat[list(matdat.keys())[-1]]
         NeurMat = sio.loadmat( self.datadir+expt_name+'/NeuralData.mat')['NeuralData'].astype(np.float32)
         CellLocs = sio.loadmat( self.datadir+expt_name+'/Location.mat')['Location']
 
@@ -133,19 +134,32 @@ class WhiskerData(SensoryBase):
             out = {'stim': self.stim[idx, :],
                 'robs': self.robs[idx, :],
                 'dfs': self.dfs[idx, :]}
+            
+            if self.speckled:
+                out['Mval'] = self.Mval[idx, :]
+                out['Mtrn'] = self.Mtrn[idx, :]
         else:
-            assert isinstance(self.cells_out, np.ndarray), 'cells_out must be a numpy array'
+            #assert isinstance(self.cells_out, np.ndarray), 'cells_out must be a numpy array'
             robs_tmp =  self.robs[:, self.cells_out]
             dfs_tmp =  self.dfs[:, self.cells_out]
             out = {'stim': self.stim[idx, :],
                 'robs': robs_tmp[idx, :],
                 'dfs': dfs_tmp[idx, :]}
             
+            if self.speckled:
+                M1tmp = self.Mval[:, self.cells_out]
+                M2tmp = self.Mtrn[:, self.cells_out]
+                out['Mval'] = M1tmp[idx, :]
+                out['Mtrn'] = M2tmp[idx, :]
+            
         if self.stimA is not None:
             out['stimA'] = self.stimA[idx, :]
 
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
+
+        if len(self.covariates) > 0:
+            self.append_covariates( out, idx)
 
         return out
     # END WhiskerData.__getitem()
