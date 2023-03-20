@@ -477,6 +477,7 @@ class ColorClouds(SensoryBase):
                     self.stim_pos[1]-BUF,
                     self.stim_pos[2]+BUF,
                     self.stim_pos[3]+BUF]
+                print( "  Stim expansion for shift:", self.stim_pos)
 
             L = self.stim_pos[2]-self.stim_pos[0]
             assert self.stim_pos[3]-self.stim_pos[1] == L, "Stimulus not square"
@@ -535,6 +536,7 @@ class ColorClouds(SensoryBase):
         if self.stim_shifts is not None:
             # Would want to shift by input eye positions if input here
             #print('eye-position shifting not implemented yet')
+            print('  Shifting stim...')
             if shift_times is None:
                 self.stim = self.shift_stim( shifts, shift_times=shift_times, already_lagged=False )
             else:
@@ -879,7 +881,7 @@ class ColorClouds(SensoryBase):
             min_fix_n = np.min(fix_n[fix_n > 0])
             #print('min_fix_n', min_fix_n, 'adjust', 1-min_fix_n)
             fix_n[fix_n > 0] += 1-min_fix_n
-            re_stim = re_stim[:len(shift_times), ...]
+            re_stim = re_stim[shift_times, ...]
             #print('max fix', np.max(fix_n), fix_n.shape)
         
         NF = np.max(fix_n)
