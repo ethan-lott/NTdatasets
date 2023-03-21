@@ -184,14 +184,11 @@ class MultiDataset(SensoryBase):
     # END MultiDataset.to_tensor
 
     def __getitem__(self, index):
-        
-        if isinstance(index, int) or isinstance(index, np.int64):
-            index = np.array([index], dtype=np.int64)
-        elif type(index) is slice:
-            index = list(range(index.start or 0, index.stop or self.NT, index.step or 1))
-        if isinstance(index, list):
-            index = np.array(index, dtype=np.int64)
-    
+        """
+        Called by the DataLoader to build the batch up one item at a time.
+        :param index: index to use for this batch
+        :return: dictionary of tensors for this batch
+        """
         if self.preload:
             stim = self.stim[index, :]
             robs = self.robs[index, :]
