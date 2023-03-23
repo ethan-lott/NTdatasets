@@ -123,7 +123,12 @@ class ColorClouds(SensoryBase):
         for fnum, fhandle in enumerate(self.fhandles):
 
             NT, NSUfile = fhandle['Robs'].shape
-            NMUfile = fhandle['RobsMU'].shape[1]
+            # Check for valid RobsMU
+            if len(fhandle['RobsMU'].shape) > 1:
+                NMUfile = fhandle['RobsMU'].shape[1]
+            else: 
+                NMUfile = 0
+
             self.num_SUs.append(NSUfile)
             self.num_MUs.append(NMUfile)
             self.SUs = self.SUs + list(range(self.NC, self.NC+NSUfile))
@@ -135,8 +140,12 @@ class ColorClouds(SensoryBase):
                 blk_inds = blk_inds.T
 
             self.channel_mapSU = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)[0, :]
-            self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)[0, :]
-            self.channel_map = np.concatenate((self.channel_mapSU, self.channel_mapMU), axis=0)
+            if NMUfile > 0:
+                self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)[0, :]
+                self.channel_map = np.concatenate((self.channel_mapSU, self.channel_mapMU), axis=0)
+            else:
+                self.channel_mapMU = []
+                self.channel_map = self.channel_mapSU
             
             # Stimulus information
             self.fix_location = np.array(fhandle['fix_location'])
@@ -181,7 +190,11 @@ class ColorClouds(SensoryBase):
             self.NC += NCfile
 
             sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
-            sacc_inds[:, 0] += -1  # convert to python so range works
+            if len(sacc_inds.shape) > 1:
+                sacc_inds[:, 0] += -1  # convert to python so range works
+            else:
+                print("Ignoring sacc_inds. Assuming not valid")
+                sacc_inds = None
 
             valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)-1  #range(self.NT)  # default -- to be changed at end of init
             if valid_inds.shape[0] == 1:   # Make version-read proof
@@ -258,10 +271,11 @@ class ColorClouds(SensoryBase):
             # Only keep valid blocks/saccades
             blk_inds = blk_inds - t0 
             blk_inds = blk_inds[ blk_inds[:, 0] >= 0, :]
-            blk_inds = blk_inds[ blk_inds[:, 1] <= self.NT, :]  
-            self.sacc_inds = self.sacc_inds - t0
-            self.sacc_inds = self.sacc_inds[ self.sacc_inds[:, 0] >= 0, :]  
-            self.sacc_inds = self.sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
+            blk_inds = blk_inds[ blk_inds[:, 1] <= self.NT, :]
+            if self.sacc_inds is not None:
+                self.sacc_inds = self.sacc_inds - t0
+                self.sacc_inds = self.sacc_inds[ self.sacc_inds[:, 0] >= 0, :]  
+                self.sacc_inds = self.sacc_inds[ sacc_inds[:, 1] < self.NT, :]  
 
         ### Process blocks and fixations/saccades
         for ii in range(blk_inds.shape[0]):
@@ -273,7 +287,8 @@ class ColorClouds(SensoryBase):
             self.block_inds.append( np.arange(blk_inds[-1,1], self.NT))
             # This is to fix zeroing of last block in fix_n.... (I think?)
 
-        self.process_fixations()
+        if self.sacc_inds is not None:
+            self.process_fixations()
 
         ### Construct drift term if relevant
         if self.drift_interval is None:
