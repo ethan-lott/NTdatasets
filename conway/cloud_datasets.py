@@ -328,7 +328,13 @@ class ColorClouds(SensoryBase):
         '''
         self.stimLP = np.zeros( [NT] + self.dims[:3], dtype=np.float32)
         if 'stimET' in self.fhandles[0]:
-            self.stimET = np.zeros( [NT] + self.dims[:3], dtype=np.float32)
+            # Check to see if 1-d or 2-d eye tracking
+            tmp = np.array(self.fhandles[0]['stimET'], dtype=np.float32)[:100, ...]
+            if len(tmp.shape) < 4:
+                print('ET is 1-d')
+                self.stimET = np.zeros( [NT, tmp.shape[1]], dtype=np.float32)
+            else:
+                self.stimET = np.zeros( [NT] + self.dims[:3], dtype=np.float32)
         else:
             self.stimET = None
             print('Missing ETstimulus')
