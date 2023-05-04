@@ -46,6 +46,7 @@ class ColorClouds(SensoryBase):
         which_stim=None,  # 'et' or 0, or 1 for lam, but default assemble later
         stim_crop=None,  # should be list/array of 4 numbers representing inds of edges
         luminance_only=True,
+        ignore_saccades=True,
         folded_lags=False, 
         binocular = False, # whether to include separate filters for each eye
         eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
@@ -102,7 +103,7 @@ class ColorClouds(SensoryBase):
         self.num_blks = np.zeros(len(filenames), dtype=int)
         self.data_threshold = 6  # how many valid time points required to include saccade?
         self.file_index = [] # which file the block corresponds to
-        self.sacc_inds = []
+        self.sacc_inds = None
         self.stim_shifts = None
         #self.stim_dims = None
 
@@ -140,8 +141,10 @@ class ColorClouds(SensoryBase):
                 blk_inds = blk_inds.T
 
             self.channel_mapSU = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)[0, :]
+            self.channel_rating = np.array(fhandle['Robs_rating'])[0, :]
             if NMUfile > 0:
                 self.channel_mapMU = np.array(fhandle['RobsMU_probe_ID'], dtype=np.int64)[0, :]
+                self.channelMU_rating = np.array(fhandle['RobsMU_rating'])[0, :]
                 self.channel_map = np.concatenate((self.channel_mapSU, self.channel_mapMU), axis=0)
             else:
                 self.channel_mapMU = []
@@ -154,6 +157,12 @@ class ColorClouds(SensoryBase):
             self.stim_locationET = np.array(fhandle['ETstim_location'])
             self.stimscale = np.array(fhandle['stimscale'])
             self.stim_pos = None
+
+            self.blockID = np.array(fhandle['blockID'], dtype=np.int64)[:, 0]
+
+            # ETtrace information
+            self.ETtrace = np.array(fhandle['ETtrace'], dtype=np.float32)
+            self.ETtraceHR = np.array(fhandle['ETtrace_raw'], dtype=np.float32)
 
             NCfile = NSUfile
             if self.include_MUs:
@@ -189,12 +198,14 @@ class ColorClouds(SensoryBase):
             self.num_units.append(NCfile)
             self.NC += NCfile
 
-            sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
-            if len(sacc_inds.shape) > 1:
-                sacc_inds[:, 0] += -1  # convert to python so range works
-            else:
-                print("Ignoring sacc_inds. Assuming not valid")
-                sacc_inds = None
+            if not ignore_saccades:
+                sacc_inds = np.array(fhandle['sacc_inds'], dtype=np.int64)
+                if len(sacc_inds.shape) > 1:
+                    sacc_inds[:, 0] += -1  # convert to python so range works
+                else:
+                    print("Ignoring sacc_inds. Assuming not valid")
+                    sacc_inds = None
+                self.sacc_inds = deepcopy(sacc_inds)
 
             valid_inds = np.array(fhandle['valid_data'], dtype=np.int64)-1  #range(self.NT)  # default -- to be changed at end of init
             if valid_inds.shape[0] == 1:   # Make version-read proof
@@ -211,7 +222,6 @@ class ColorClouds(SensoryBase):
         if len(filenames) > 1:
             print('Warning: currently ignoring multiple files')
         self.used_inds = deepcopy(valid_inds)
-        self.sacc_inds = deepcopy(sacc_inds)
         self.LRpresent = LRpresent
 
         # Make binocular gain term
@@ -308,6 +318,7 @@ class ColorClouds(SensoryBase):
         # Cross-validation setup
         # Develop default train, validation, and test datasets 
         #self.crossval_setup()
+        ### SHOULD MAKE THIS INTO A FUNCTION THAT CAN BE RE-APPLIEd
         vblks, trblks = self.fold_sample(len(self.block_inds), 5, random_gen=False)
         self.train_inds = []
         for nn in trblks:
@@ -315,8 +326,12 @@ class ColorClouds(SensoryBase):
         self.val_inds = []
         for nn in vblks:
             self.val_inds += list(deepcopy(self.block_inds[nn]))
+
+        # Eliminate from time point any times when the datafilers are all zero
+        # this will include all places where used-inds is zero as well
         self.train_inds = np.array(self.train_inds, dtype=np.int64)
         self.val_inds = np.array(self.val_inds, dtype=np.int64)
+
     # END ColorClouds.__init__
 
     def preload_numpy(self):
@@ -331,7 +346,7 @@ class ColorClouds(SensoryBase):
             # Check to see if 1-d or 2-d eye tracking
             tmp = np.array(self.fhandles[0]['stimET'], dtype=np.float32)[:100, ...]
             if len(tmp.shape) < 4:
-                print('ET is 1-d')
+                print("  ET stimulus is 1-d bars.")
                 self.stimET = np.zeros( [NT, tmp.shape[1]], dtype=np.float32)
             else:
                 self.stimET = np.zeros( [NT] + self.dims[:3], dtype=np.float32)
@@ -444,6 +459,7 @@ class ColorClouds(SensoryBase):
         which_stim=None, stim_wrap=None, stim_crop=None, # conventional stim: ET=0, lam=1,
         top_corner=None, L=None,  # position of stim
         time_embed=0, num_lags=10,
+        luminance_only=False,
         shifts=None, BUF=20, # shift buffer
         shift_times=None, # So that can put partial-shifts over time range in stimulus
         fixdot=0 ):
@@ -526,6 +542,15 @@ class ColorClouds(SensoryBase):
         #print('Stim shape', self.stim.shape)
         # Note stim stored in numpy is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
         self.stim_dims = [self.dims[0], L, L, 1]
+        if luminance_only:
+            if self.dims[0] > 1:
+                # Resample first dimension of stimulus
+                print('  Shifting to luminance-only')
+                stim_tmp = deepcopy(self.stim.reshape([-1]+self.stim_dims[:3]))
+                del self.stim
+                torch.cuda.empty_cache()
+                self.stim = deepcopy(stim_tmp[:, [0], ...])
+                self.stim_dims[0] = 1            
 
         # stim_wrap if 'which_stim' chosen
         if stim_wrap is not None:
@@ -625,12 +650,12 @@ class ColorClouds(SensoryBase):
         #if not isinstance(tmp_stim, np.ndarray):
         #    tmp_stim = tmp_stim.cpu().numpy()
     
+        NT = stim.shape[0]
         print("  Time embedding...")
         if len(tmp_stim.shape) == 2:
             print( "Time embed: reshaping stimulus ->", self.stim_dims)
             tmp_stim = tmp_stim.reshape([NT] + self.stim_dims)
 
-        NT = stim.shape[0]
         assert self.NT == NT, "TIME EMBEDDING: stim length mismatch"
 
         tmp_stim = tmp_stim[np.arange(NT)[:,None]-np.arange(nlags), :, :, :]
@@ -1051,19 +1076,6 @@ class ColorClouds(SensoryBase):
 
     # END MultiDatasetFix.crossval_setup
 
-    def fold_sample( self, num_items, folds, random_gen=False):
-        """This really should be a general method not associated with self"""
-        if random_gen:
-            num_val = int(num_items/folds)
-            tmp_seq = np.random.permutation(num_items)
-            val_items = np.sort(tmp_seq[:num_val])
-            rem_items = np.sort(tmp_seq[num_val:])
-        else:
-            offset = int(folds//2)
-            val_items = np.arange(offset, num_items, folds, dtype='int32')
-            rem_items = np.delete(np.arange(num_items, dtype='int32'), val_items)
-        return val_items, rem_items
-
     def get_max_samples(self, gpu_n=0, history_size=1, nquad=0, num_cells=None, buffer=1.2):
         """
         get the maximum number of samples that fit in memory -- for GLM/GQM x LBFGS
@@ -1114,8 +1126,9 @@ class ColorClouds(SensoryBase):
                 if len(self.cells_out) == 0:
                     out = {'stim': self.stim[idx, :],
                         'robs': self.robs[idx, :],
-                        'dfs': self.dfs[idx, :],
-                        'fix_n': self.fix_n[idx]}
+                        'dfs': self.dfs[idx, :]}
+                    if len(self.fix_n) > 0:
+                        out['fix_n'] = self.fix_n[idx]
                         # missing saccade timing vector -- not specified
                 else:
                     if self.robs_out is not None:
@@ -1125,10 +1138,23 @@ class ColorClouds(SensoryBase):
                         assert isinstance(self.cells_out, list), 'cells_out must be a list'
                         robs_tmp =  self.robs[:, self.cells_out]
                         dfs_tmp =  self.dfs[:, self.cells_out]
+ 
                     out = {'stim': self.stim[idx, :],
                         'robs': robs_tmp[idx, :],
-                        'dfs': dfs_tmp[idx, :],
-                        'fix_n': self.fix_n[idx]}
+                        'dfs': dfs_tmp[idx, :]}
+                    if len(self.fix_n) > 0:
+                        out['fix_n'] = self.fix_n[idx]
+
+                if self.speckled:
+                    if self.Mtrn_out is None:
+                        M1tmp = self.Mval[:, self.cells_out]
+                        M2tmp = self.Mtrn[:, self.cells_out]
+                        out['Mval'] = M1tmp[idx, :]
+                        out['Mtrn'] = M2tmp[idx, :]
+                    else:
+                        out['Mval'] = self.Mtrn_out[idx, :]
+                        out['Mtrn'] = self.Mtrn_out[idx, :]
+
                 if self.binocular and self.output_separate_eye_stim:
                     # Overwrite left stim with left eye only
                     tmp_dims = out['stim'].shape[-1]//2
@@ -1189,4 +1215,4 @@ class ColorClouds(SensoryBase):
     #    return len(self.used_inds)
 
     def __len__(self):
-        return len(self.used_inds)
+        return self.robs.shape[0]

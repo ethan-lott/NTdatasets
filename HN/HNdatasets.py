@@ -324,10 +324,14 @@ class HNdataset(SensoryBase):
                 'robs': robs_tmp[idx, :],
                 'dfs': dfs_tmp[idx, :]}
             if self.speckled:
-                M1tmp = self.Mval[:, self.cells_out]
-                M2tmp = self.Mtrn[:, self.cells_out]
-                out['Mval'] = M1tmp[idx, :]
-                out['Mtrn'] = M2tmp[idx, :]
+                if self.Mtrn_out is None:
+                    M1tmp = self.Mval[:, self.cells_out]
+                    M2tmp = self.Mtrn[:, self.cells_out]
+                    out['Mval'] = M1tmp[idx, :]
+                    out['Mtrn'] = M2tmp[idx, :]
+                else:
+                    out['Mval'] = self.Mtrn_out[idx, :]
+                    out['Mtrn'] = self.Mtrn_out[idx, :]
             
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]

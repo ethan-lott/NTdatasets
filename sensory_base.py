@@ -126,6 +126,8 @@ class SensoryBase(Dataset):
             self.cells_out = []
             self.robs_out = None
             self.dfs_out = None
+            self.Mtrn_out = None
+            self.Mval_out = None
             print("  Reset cells_out to full dataset (%d cells)."%self.NC )
         else:
             if not isinstance(cell_list, list):
@@ -139,6 +141,9 @@ class SensoryBase(Dataset):
             self.cells_out = cell_list
             self.robs_out = deepcopy(self.robs[:, cell_list])
             self.dfs_out = deepcopy(self.dfs[:, cell_list])
+            if self.Mtrn is not None:
+                self.Mtrn_out = deepcopy(self.Mtrn[:, cell_list])
+                self.Mval_out = deepcopy(self.Mval[:, cell_list])
     # END SensoryBase.set_cells()
 
     def time_embedding( self, stim=None, nlags=None ):
@@ -427,6 +432,9 @@ class SensoryBase(Dataset):
             for tr in ival:
                 self.Mval[self.block_inds[tr], cc] = 1.0
                 self.Mtrn[self.block_inds[tr], cc] = 0.0
+        if self.cells_out is not None:
+            self.Mtrn_out = deepcopy(self.Mtrn[:, self.cells_out])
+            self.Mval_out = deepcopy(self.Mval[:, self.cells_out])
     # END SensoryBase.speckledXV_setup
     
     def set_speckledXV(self, val=True, folds=5, random_gen=False):
