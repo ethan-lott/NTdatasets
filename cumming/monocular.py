@@ -22,16 +22,17 @@ class MultiDataset(SensoryBase):
     def __init__(self,
         filenames,
         datadir=None,
+        trial_sample=False,
         #preload=False,
-        #num_lags=1,
+        num_lags=8,
         #time_embed=True,
         #includeMUs=False,
         **kwargs):
 
         # call parent constructor
         super().__init__(
-            filenames, datadir=datadir,
-            #num_lags=num_lags, time_embed=time_embed,
+            filenames, datadir=datadir, num_lags=num_lags, # default to cut out of each trial block
+            #time_embed=time_embed,
             **kwargs)
         #print( "Loading", self.datadir + self.filenames)
 
@@ -42,6 +43,7 @@ class MultiDataset(SensoryBase):
         self.file_index = [] # which file the block corresponds to
         self.block_inds = []
         self.NTfile = []
+        self.trial_sample = trial_sample
 
         self.unit_ids = []
         #self.includeMUs = include_MUs
@@ -61,6 +63,8 @@ class MultiDataset(SensoryBase):
         self.block_assign = []
         self.block_grouping = []
         nfiles = 0
+
+        self.trial_size = None
 
         for f, fhandle in enumerate(self.fhandles):
             NTfile = fhandle['robs'].shape[0]
@@ -86,6 +90,12 @@ class MultiDataset(SensoryBase):
             blockstart = np.where(np.diff(blocks)==-1)[0]
             blockend = np.where(np.diff(blocks)==1)[0]
             nblocks = len(blockstart)
+
+            if self.trial_size is None:
+                trsize_list = []
+                for b in range(nblocks):
+                    trsize_list.append(blockend[b]-blockstart[b])
+                self.trial_size = int(np.median(trsize_list))
 
             for b in range(nblocks):
                 self.file_index.append(f)
@@ -161,6 +171,11 @@ class MultiDataset(SensoryBase):
         self.avRs = None  # need to set to None so can will pre-calculate
         self.avRs = self.avrates()
 
+        # Make sure beginning of trial-blocks are not used to fit (with num_lags specified)
+        if self.num_lags is not None:
+            for bb in range(self.num_blocks):
+                self.dfs[np.arange(self.num_lags)+self.block_inds[bb][0], :] = 0.0
+
         # Set up default cross-validation config
         self.crossval_setup()
     # END MultiDataset.__init__
@@ -189,6 +204,19 @@ class MultiDataset(SensoryBase):
         :param index: index to use for this batch
         :return: dictionary of tensors for this batch
         """
+        # Convert trials to indices if trial-sample
+        if self.trial_sample:
+            if isinstance(index, slice):
+                index = np.arange(self.num_blocks)[index]  # convert to array
+
+            if utils.is_int(index):
+                index = [index]
+
+            ts = self.block_inds[index[0]]
+            for ii in index[1:]:
+                ts = np.concatenate( (ts, self.block_inds[ii]), axis=0 )
+            index = ts
+
         if self.preload:
             stim = self.stim[index, :]
             robs = self.robs[index, :]
@@ -342,6 +370,10 @@ class MultiDataset(SensoryBase):
         val_blks = np.array(vfixes, dtype='int64')
         train_blks = np.array(tfixes, dtype='int64')
         
+        self.val_blks = val_blks
+        self.train_blks = train_blks
+        self.test_blks = test_fixes
+
         # Assign indexes based on validation by block
         self.train_inds = []
         self.test_inds = []
@@ -374,6 +406,24 @@ class MultiDataset(SensoryBase):
             rem_items = np.delete(np.arange(num_items, dtype='int32'), val_items)
         return val_items, rem_items
 
+    @staticmethod
+    def collate_blocks( data ):
+        """Alternative to the collate function that attaches blocks labeled by one index together
+        To explain: if you ask for one index (of a block) from the dataset like [1] and get back 
+        a block of data (B x M), the default collate_fn will still treat this as one data sample 
+        (1 x B x M) rather than the B data samples in the block. This is a simple flatten...
+        Note: assumes that this is getting a dictionary, of course"""
+        #print(len(data))
+        data_out = deepcopy(data[0])
+        for ii in range(1,len(data)):
+            for dsub in data_out:
+                data_out[dsub] = torch.cat( (data_out[dsub], data[ii][dsub]), axis=0 )
+            # if trainer concatentates batches incorrectly --- this is a kluge
+            # if len(data[dsub].shape) > 2:  # more general without this 'if', assuming above
+            #print(dsub)
+            #print(data[dsub].shape)
+            #data[dsub] = data[dsub].flatten(end_dim=1) 
+        return data
 
 
 def get_stim_url(id):
