@@ -26,13 +26,13 @@ class SensoryBase(Dataset):
     def __init__(self,
         filenames, # this could be single filename or list of filenames, to be processed in specific way
         datadir, 
-        # Stim setuup
+        # Stim setup
+        trial_sample=False,
         num_lags=10,
         time_embed=2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
         #maxT = None,
         # other
         include_MUs = False,
-        preload = True,
         drift_interval = None,
         device=torch.device('cpu')
         ):
@@ -42,10 +42,11 @@ class SensoryBase(Dataset):
         self.filenames = filenames
         self.device = device
         
+        self.trial_sample = trial_sample
         self.num_lags = num_lags
         self.stim_dims = None
         self.time_embed = time_embed
-        self.preload = preload
+        self.preload = True
         self.drift_interval = drift_interval
 
         # Assign standard variables
@@ -491,3 +492,34 @@ class SensoryBase(Dataset):
 
     def __len__(self):
         return self.robs.shape[0]
+
+    @staticmethod
+    def is_int( val ):
+        """returns Boolean as to whether val is one of many types of integers"""
+        if isinstance(val, int) or \
+            isinstance(val, np.int) or isinstance(val, np.int32) or isinstance(val, np.int64) or \
+            (isinstance(val, np.ndarray) and (len(val.shape) == 0)):
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def index_to_array( index, max_val ):
+        """This converts any for index to dataset, including slices, and plain ints, into numpy array"""
+
+        if isinstance(index, slice):
+            start = index.start
+            stop = index.stop
+            step = index.step
+            if start is None:
+                start = 0
+            if stop is None:
+                stop = max_val
+            if step is None:
+                step = 1
+            return np.arange(start,stop, step)
+        elif SensoryBase.is_int(index):
+            return [index]
+        elif isinstance(index, list):
+            return np.array(index, dtype=np.int64)
+        return index

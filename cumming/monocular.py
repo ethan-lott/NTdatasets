@@ -17,12 +17,21 @@ from NTdatasets.sensory_base import SensoryBase
 class MultiDataset(SensoryBase):
     """
     MULTIDATASET can load batches from multiple datasets
+
+    args specific to this init:
+        filenames
+        datadir
+        num_lags: how many lags back will the presumed model require (for establishing DFs too)
+    kwargs handled by SensoryBase:
+        drift_interval: to build drift terms (spacing based on trials)
+        time_embed: whether to time-embed or not
+        trial_sample: whether dataset returns time-contiguous trials for each index or individual time points 
+        device
     """
 
     def __init__(self,
         filenames,
         datadir=None,
-        trial_sample=False,
         #preload=False,
         num_lags=8,
         #time_embed=True,
@@ -43,7 +52,6 @@ class MultiDataset(SensoryBase):
         self.file_index = [] # which file the block corresponds to
         self.block_inds = []
         self.NTfile = []
-        self.trial_sample = trial_sample
 
         self.unit_ids = []
         #self.includeMUs = include_MUs

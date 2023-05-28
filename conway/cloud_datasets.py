@@ -38,8 +38,8 @@ class ColorClouds(SensoryBase):
         time_embed=2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
         num_lags=10, 
         include_MUs=False,
-        preload=True,
         drift_interval=None,
+        trial_sample=False,
         device=torch.device('cpu'),
         # Dataset-specitic inputs
         # Stim setup -- if dont want to assemble stimulus: specify all things here for default options
@@ -55,9 +55,9 @@ class ColorClouds(SensoryBase):
 
         super().__init__(
             filenames=filenames, datadir=datadir, 
-            time_embed=time_embed, num_lags=num_lags, 
-            include_MUs=include_MUs, preload=preload,
-            drift_interval=drift_interval, device=device)
+            time_embed=time_embed, num_lags=num_lags, include_MUs=include_MUs, 
+            drift_interval=drift_interval, trial_sample=trial_sample,
+            device=device)
 
         # Done in parent constructor
         #self.datadir = datadir
@@ -229,7 +229,7 @@ class ColorClouds(SensoryBase):
         self.binocular_gain[self.LRpresent == 1, 0] = 1.0
         self.binocular_gain[self.LRpresent == 2, 1] = 1.0
 
-        if preload:
+        if self.preload:
             print("Loading data into memory...")
             self.preload_numpy()
 
@@ -331,6 +331,8 @@ class ColorClouds(SensoryBase):
         # this will include all places where used-inds is zero as well
         self.train_inds = np.array(self.train_inds, dtype=np.int64)
         self.val_inds = np.array(self.val_inds, dtype=np.int64)
+        self.train_blks = trblks
+        self.val_blks = vblks
 
     # END ColorClouds.__init__
 
@@ -1113,6 +1115,16 @@ class ColorClouds(SensoryBase):
         assert self.stim is not None, "Have to specify stimulus before pulling data."
         #if isinstance(idx, np.ndarray):
         #    idx = list(idx)
+        # Convert trials to indices if trial-sample
+        if self.trial_sample:
+            idx = self.index_to_array(idx, len(self.block_inds))
+            ts = self.block_inds[idx[0]]
+            for ii in idx[1:]:
+                ts = np.concatenate( (ts, self.block_inds[ii]), axis=0 )
+            idx = ts
+        else:
+            idx = self.index_to_array(idx, self.NT)
+
         if self.preload:
 
             if self.time_embed == 1:
@@ -1199,6 +1211,9 @@ class ColorClouds(SensoryBase):
         if self.binocular:
             out['binocular'] = self.binocular_gain[idx, :]
             
+        if len(self.covariates) > 0:
+            self.append_covariates( out, idx)
+
         ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)
         #if (self.num_lags > 0) &  ~utils.is_int(idx):
