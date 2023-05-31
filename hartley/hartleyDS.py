@@ -18,25 +18,34 @@ class Hartley(SensoryBase):
     """
 
     def __init__(self,
-                 filenames,
-                 datadir,
-                 num_lags,
-                 time_embed,
-                 include_MUs,
-                 device,
-                 **kwargs
-                 ):
+                filenames,
+                datadir, 
+                time_embed=2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
+                num_lags=10, 
+                include_MUs=False,
+                preload=True,
+                drift_interval=None,
+                device=torch.device('cpu'),
+                # Dataset-specitic inputs
+                # Stim setup -- if dont want to assemble stimulus: specify all things here for default options
+                which_stim=None,  # 'et' or 0, or 1 for lam, but default assemble later
+                stim_crop=None,  # should be list/array of 4 numbers representing inds of edges
+                luminance_only=True,
+                ignore_saccades=True,
+                folded_lags=False, 
+                binocular = False, # whether to include separate filters for each eye
+                eye_config = 2,  # 0 = all, 1, -1, and 2 are options (2 = binocular)
+                maxT = None,
+                **kwargs
+                ):
         
         super().__init__(
                         filenames=filenames,
                         datadir=datadir,
-                        num_lags=num_lags,
-                        time_embed=time_embed,
-                        include_MUs=include_MUs,
-                        device=device,
                         **kwargs
                         )
 
+        # Open .mat files as H5PYs
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.filenames]
         
         # build index map
@@ -77,7 +86,7 @@ class Hartley(SensoryBase):
             # Get data filters
             SUdfs = fhandle['datafilts'][:,:]                                       # SU datafilters
             MUdfs = fhandle['datafiltsMU'][:,:]                                     # MU datafilters
-            self.dfs = np.concatenate((SUdfs,MUdfs),1) if include_MUs else SUdfs    # Store either combined dfs or just SUs
+            self.dfs = np.concatenate((SUdfs,MUdfs),1) if self.include_MUs else SUdfs    # Store either combined dfs or just SUs
 
             # Pull blocks from data_filters
             blocks = (np.sum(self.dfs, axis=1)==0).astype(np.float32)
