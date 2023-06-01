@@ -977,12 +977,15 @@ class HartleyDataset(SensoryBase):
                     dim=1)
 
             out = {'stim': stim, 'robs': robs, 'dfs': dfs, 'fix_n': self.fix_n[inds]}
+            
 
         # Addition whether-or-not preloaded
         if self.Xdrift is not None:
             out['Xdrift'] = self.Xdrift[idx, :]
         if self.binocular:
             out['binocular'] = self.binocular_gain[idx, :]
+        for cov in self.covariates.keys():
+            out[cov] = self.covariates[cov][idx,...]
             
         ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)
@@ -993,7 +996,7 @@ class HartleyDataset(SensoryBase):
         #        print( "Warning: requested batch smaller than num_lags %d < %d"%(out['dfs'].shape[0], self.num_lags) )
      
         return out
-    # END: CloudDataset.__getitem__
+    # END: HartleyDataset.__getitem__
 
     def __len__(self):
         return self.robs.shape[0]
