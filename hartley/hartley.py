@@ -25,15 +25,15 @@ class HartleyDataset(SensoryBase):
                 device=torch.device('cpu'),
                 # Dataset-specitic inputs
                 # Stim setup -- if dont want to assemble stimulus: specify all things here for default options
-                which_stim=1,            # 'et' or 0, or 1 for lam, but default assemble later
+                which_stim=1,               # 'et' or 0, or 1 for lam, but default assemble later
                 stim_crop=None,             # should be list/array of 4 numbers representing inds of edges
                 luminance_only=False,
                 ignore_saccades=True,
                 folded_lags=False, 
-                binocular=False,          # whether to include separate filters for each eye
-                eye_config=0,             # 0 = no subsampling, 1(left), 2(right), and 3(binocular) are options
+                binocular=False,            # whether to include separate filters for each eye
+                eye_config=0,               # 0 = no subsampling, 1(left), 2(right), and 3(binocular) are options
                 maxT=None,
-                meta_dims = 4):
+                meta_vals = 4):
     
         super().__init__(
                         filenames=filenames,
@@ -53,7 +53,8 @@ class HartleyDataset(SensoryBase):
         self.luminance_only = luminance_only
         self.generate_Xfix = False
         self.output_separate_eye_stim = False
-        self.meta_dims = meta_dims
+        self.meta_vals = meta_vals
+        self.maxT = maxT
 
         self.start_t = 0
         self.drift_interval = drift_interval
@@ -62,32 +63,38 @@ class HartleyDataset(SensoryBase):
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.filenames]
         self.avRs = None
 
-        self.metas = []
+        self.meta_dims = []
+        self.metaRaw = []
+        self.meta = []
+
         self.fix_n = []
         self.used_inds = []
         self.NT = 0
 
         # build index map -- exclude variables already set in sensory-base
         self.num_blks = np.zeros(len(filenames), dtype=int)
-        self.data_threshold = 6  # how many valid time points required to include saccade?
-        self.file_index = [] # which file the block corresponds to
+        self.data_threshold = 6     # how many valid time points required to include saccade?
+        self.file_index = []        # which file the block corresponds to
         self.sacc_inds = None
         self.stim_shifts = None
+        self.meta_shift = None
 
         # Get data from each file
         for fnum, fhandle in enumerate(self.fhandles):
 
             # Read and store this file's counts
             NT, NSUfile = fhandle['Robs'].shape                                                 # Read timeframe and single unit counts
+            if self.maxT is not None:
+                NT = np.minimum(self.maxT, NT)
+
             NMUfile = fhandle['RobsMU'].shape[1] if len(fhandle['RobsMU'].shape) > 1 else 0     # Read multi-unit count
             NCfile = NSUfile + NMUfile if self.include_MUs else NSUfile                         # Calculate total cell count
             self.num_SUs.append(NSUfile)                                                        # Store SU count
             self.num_MUs.append(NMUfile)                                                        # Store MU count
             self.num_units.append(NCfile)                                                       # Store cell count
             self.SUs = self.SUs + list(range(self.NC, self.NC+NSUfile))                         # Store SU indices
-            #self.unit_ids.append(self.NC + np.asarray(range(NCfile)))                           # Store cell indices
             self.NC += NCfile                                                                   # Accumulate total cells
-            self.NT += NT                                                                        # Accumulate total timeframes
+            self.NT += NT                                                                       # Accumulate total timeframes
             
 
             # Get this file's blocks
@@ -97,6 +104,8 @@ class HartleyDataset(SensoryBase):
                 print('WARNING: blk_inds is stored old-style: transposing')
                 blk_inds = blk_inds.T
             # self.blockID = np.array(fhandle['blockID'], dtype=np.int64)[:, 0]   # Read and store block IDs
+            if self.maxT is not None:
+                blk_inds=blk_inds[blk_inds[:,1]<self.maxT,:]
 
             # Construct channel map
             self.channel_mapSU = np.array(fhandle['Robs_probe_ID'], dtype=np.int64)[0, :]               # Read and store SU probe IDs
@@ -126,9 +135,10 @@ class HartleyDataset(SensoryBase):
             self.block_filemapping += list(np.ones(blk_inds.shape[0], dtype=int)*fnum)
             self.num_blks[fnum] = blk_inds.shape[0]
 
-            self.dims = list(fhandle['stim'].shape[1:4])      # this is basis of data (stimLP and stimET)
+            self.dims = list(fhandle['stim'].shape[1:4])        # this is basis of data (stimLP and stimET)
             self.dims.append(self.num_lags if self.time_embed > 0 else 1)
-            self.stim_dims = None                             # when stim is constructed
+            self.stim_dims = None                               # when stim is constructed
+            self.meta_dims = None                               # when meta is constructed
 
             # Adjust dims as necessary
             if luminance_only:
@@ -166,7 +176,7 @@ class HartleyDataset(SensoryBase):
         # For now let's just debug with one file
         if len(filenames) > 1:
             print('Warning: currently ignoring multiple files')
-        self.used_inds = deepcopy(valid_inds)
+        self.used_inds = deepcopy(valid_inds[valid_inds<self.maxT])
         self.LRpresent = LRpresent
 
         # Make binocular gain term
@@ -181,8 +191,9 @@ class HartleyDataset(SensoryBase):
 
             if which_stim is not None:
                 #assert num_lags is not None, "Need to specify num_lags and other stim params"
-                self.assemble_stimulus( which_stim=which_stim, 
-                    time_embed=time_embed, num_lags=num_lags, stim_crop=stim_crop )
+                self.assemble_stimulus(which_stim=which_stim, 
+                    time_embed=time_embed, num_lags=num_lags, stim_crop=stim_crop)
+                self.assemble_metadata(time_embed=time_embed, num_lags=num_lags)
 
             # Have data_filters represend used_inds (in case it gets through)
             unified_df = np.zeros([self.NT, 1], dtype=np.float32)
@@ -201,8 +212,8 @@ class HartleyDataset(SensoryBase):
             t0, t1 = 0, self.NT
 
         self.start_t = t0
-        if maxT is not None:
-            t1 = np.minimum( t0+maxT, t1 )
+        if self.maxT is not None:
+            t1 = np.minimum(t0+self.maxT, t1)
         ts = range(t0, t1)
         print('T-range:', t0, t1)
 
@@ -277,6 +288,8 @@ class HartleyDataset(SensoryBase):
         # this will include all places where used-inds is zero as well
         self.train_inds = np.array(self.train_inds, dtype=np.int64)
         self.val_inds = np.array(self.val_inds, dtype=np.int64)
+        if self.maxT is not None:
+            self.val_inds = self.val_inds[self.val_inds<self.maxT]
     # END .crossval_setup()
 
     def preload_numpy(self):
@@ -287,6 +300,8 @@ class HartleyDataset(SensoryBase):
         Pre-allocate memory for data
         '''
         self.stimLP = np.zeros( [NT] + self.dims[:3], dtype=np.float32)
+        self.metaRaw = np.zeros([NT, 1, 1, self.meta_vals], dtype=np.float32)
+
         if 'stimET' in self.fhandles[0]:
             # Check to see if 1-d or 2-d eye tracking
             tmp = np.array(self.fhandles[0]['stimET'], dtype=np.float32)[:100, ...]
@@ -301,7 +316,7 @@ class HartleyDataset(SensoryBase):
 
         self.robs = np.zeros( [NT, self.NC], dtype=np.float32)
         self.dfs = np.ones( [NT, self.NC], dtype=np.float32)
-        self.metas = np.zeros([NT, self.meta_dims], dtype=np.float32)
+        #self.meta = np.zeros([NT, self.meta_vals], dtype=np.float32)
 
         #self.eyepos = np.zeros([NT, 2], dtype=np.float32)
         #self.frame_times = np.zeros([NT,1], dtype=np.float32)
@@ -312,7 +327,8 @@ class HartleyDataset(SensoryBase):
             
             fhandle = self.fhandles[ee]
             sz = fhandle['stim'].shape
-            inds = np.arange(t_counter, t_counter+sz[0], dtype=np.int64)
+            sz0 = np.minimum(self.maxT, sz[0]) if self.maxT is not None else sz[0]
+            inds = np.arange(t_counter, t_counter+sz0, dtype=np.int64)
             #inds = self.stim_indices[expt][stim]['inds']
             #self.stim[inds, ...] = np.transpose( np.array(fhandle[self.stimname], dtype=np.float32), axes=[0,3,1,2])
             if self.binocular:
@@ -347,30 +363,30 @@ class HartleyDataset(SensoryBase):
                         
             else:  # Monocular
                 if self.luminance_only:
-                    self.stimLP[inds, 0, ...] = np.array(fhandle['stim'], dtype=np.float32)[:, 0, ...]
+                    self.stimLP[inds, 0, ...] = np.array(fhandle['stim'], dtype=np.float32)[:sz0, 0, ...]
                     if self.stimET is not None:
-                        #print(np.array(fhandle['stimET'], dtype=np.float32).shape, self.stimET[inds, 0, ...].shape)
-                        self.stimET[inds, 0, ...] = np.array(fhandle['stimET'], dtype=np.float32)[:, 0, ...]
+                        self.stimET[inds, 0, ...] = np.array(fhandle['stimET'], dtype=np.float32)[:sz0, 0, ...]
                 else:
-                    self.stimLP[inds, ...] = np.array(fhandle['stim'], dtype=np.float32)
+                    self.stimLP[inds, ...] = np.array(fhandle['stim'], dtype=np.float32)[:sz0, ...]
                     if self.stimET is not None:
-                        self.stimET[inds, ...] = np.array(fhandle['stimET'], dtype=np.float32)
+                        self.stimET[inds, ...] = np.array(fhandle['stimET'], dtype=np.float32)[:sz0, ...]
 
             """ Hartley metadata """
-            self.metas[inds,:] = np.array(fhandle['hartley_metas'], dtype=np.float32)
+            self.metaRaw[inds,0,0,:] = np.array(fhandle['hartley_metas'], dtype=np.float32)[:sz0, ...]
+            #self.meta[inds,:] = np.array(fhandle['hartley_metas'], dtype=np.float32)[:sz0, ...]
 
             """ Robs and DATAFILTERS"""
             robs_tmp = np.zeros( [len(inds), self.NC], dtype=np.float32 )
             dfs_tmp = np.zeros( [len(inds), self.NC], dtype=np.float32 )
             num_sus = fhandle['Robs'].shape[1]
             units = range(unit_counter, unit_counter+num_sus)
-            robs_tmp[:, units] = np.array(fhandle['Robs'], dtype=np.float32)
-            dfs_tmp[:, units] = np.array(fhandle['datafilts'], dtype=np.float32)
+            robs_tmp[:, units] = np.array(fhandle['Robs'], dtype=np.float32)[:sz0, ...]
+            dfs_tmp[:, units] = np.array(fhandle['datafilts'], dtype=np.float32)[:sz0, ...]
             if self.include_MUs:
                 num_mus = fhandle['RobsMU'].shape[1]
                 units = range(unit_counter+num_sus, unit_counter+num_sus+num_mus)
-                robs_tmp[:, units] = np.array(fhandle['RobsMU'], dtype=np.float32)
-                dfs_tmp[:, units] = np.array(fhandle['datafiltsMU'], dtype=np.float32)
+                robs_tmp[:, units] = np.array(fhandle['RobsMU'], dtype=np.float32)[:sz0, ...]
+                dfs_tmp[:, units] = np.array(fhandle['datafiltsMU'], dtype=np.float32)[:sz0, ...]
             
             self.robs[inds,:] = deepcopy(robs_tmp)
             self.dfs[inds,:] = deepcopy(dfs_tmp)
@@ -421,6 +437,66 @@ class HartleyDataset(SensoryBase):
         return fix_present
     # END .is_fixpoint_present()
 
+    def assemble_metadata(self,
+                       time_embed=0, num_lags=10,
+                       luminance_only=False,
+                       shifts=None, BUF=20,
+                       shift_times=None,
+                       fixdot=0):
+        """ This assembles the Hartley metadata from the raw numpy-stored metadata into self.meta """
+        
+        # Delete existing meta and clear cache to prevent memory issues on GPU
+        if self.meta is not None:
+            del self.meta
+            self.meta = None
+            torch.cuda.empty_cache()
+        num_clr = self.dims[0]
+
+        #if not isinstance(which_stim, int):
+        #    if which_stim in ['ET', 'et', 'stimET']:
+        #        which_stim=0
+        #    else:
+        #        which_stim=1
+        #if which_stim == 0:
+        #    print("Meta: using ET stimulus; N/A")
+        #else:
+        print("Meta: using laminar probe stimulus")
+        self.meta = torch.tensor(self.metaRaw, dtype=torch.float32, device=self.device)
+
+        self.meta_dims = [1, 1, self.meta_vals, 1]
+        '''if luminance_only:
+            if self.dims[0] > 1:
+                # Resample first dimension of metadata
+                print('\tShifting to luminance-only')
+                meta_tmp = deepcopy(self.meta.reshape([-1]+self.meta_dims[:3]))
+                del self.meta
+                torch.cuda.empty_cache()
+                self.meta = deepcopy(meta_tmp[:, [0], ...])
+                self.meta_dims[0] = 1
+        
+        self.meta_shifts = shifts
+        if self.meta_shifts is not None:
+            # Would want to shift by input eye positions if input here
+            print('\tShifting stim...')
+            if shift_times is None:
+                self.meta = self.shift_meta(shifts, shift_times=shift_times, already_lagged=False)
+            else:
+                self.meta[shift_times, ...] = self.shift_meta(shifts, shift_times=shift_times, already_lagged=False)'''
+
+        if time_embed is not None:
+            self.time_embed = time_embed
+        if time_embed > 0:
+            if time_embed == 2:
+                self.meta = self.time_embedding_meta(self.meta, nlags=num_lags)
+        # now metadata is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
+
+        self.num_lags = num_lags
+
+        # Flatten meta 
+        self.meta = self.meta.reshape([self.NT, -1])
+        print( "\tDone" )
+    # END .assemble_metadata()
+        
     def assemble_stimulus(self,
         which_stim=None, stim_wrap=None, stim_crop=None, # conventional stim: ET=0, lam=1,
         top_corner=None, L=None,  # position of stim
@@ -543,10 +619,8 @@ class HartleyDataset(SensoryBase):
             print('  Shifting stim...')
             if shift_times is None:
                 self.stim = self.shift_stim( shifts, shift_times=shift_times, already_lagged=False )
-                self.metas = self.shift_metas(shifts, shift_times=shift_times, already_lagged=False)
             else:
                 self.stim[shift_times, ...] = self.shift_stim( shifts, shift_times=shift_times, already_lagged=False )
-                self.metas[shift_times, ...] = self.shift_metas(shifts, shift_times=shift_times, already_lagged=False)
 
         # Reduce size back to original If expanded to handle shifts
         if need2crop:
@@ -575,6 +649,36 @@ class HartleyDataset(SensoryBase):
         self.stim = self.stim.reshape([self.NT, -1])
         print( "  Done" )
     # END .assemble_stimulus()
+
+    def time_embedding_meta(self, meta=None, nlags=None):
+        """Note this overloads SensoryBase because reshapes in full dimensions to handle folded_lags"""
+        assert self.meta_dims is not None, "Need to assemble meta before time-embedding."
+        if nlags is None:
+            nlags = self.num_lags
+        if self.meta_dims[3] == 1:
+            self.meta_dims[3] = nlags
+        if meta is None:
+            tmp_meta = deepcopy(self.meta)
+        else:
+            tmp_meta = torch.tensor(meta, dtype=torch.float32) if isinstance(meta, np.ndarray) else meta.clone().detach()
+    
+        NT = meta.shape[0]
+        print("  Time embedding...")
+        if len(tmp_meta.shape) == 2:
+            print( "Time embed: reshaping stimulus ->", self.meta_dims)
+            tmp_meta = tmp_meta.reshape([NT] + self.meta_dims)
+
+        assert self.NT == NT, "TIME EMBEDDING: meta length mismatch"
+
+        tmp_meta = tmp_meta[np.arange(NT)[:,None]-np.arange(nlags), :, :, :]
+        if self.folded_lags:
+            tmp_meta = torch.permute(tmp_meta, (0,2,1,3,4)) 
+            print("Folded lags: meta-dim = ", self.meta.shape)
+        else:
+            tmp_meta = torch.permute(tmp_meta, (0,2,3,4,1))
+     
+        return tmp_meta
+    # END .time_embedding_meta()
 
     def time_embedding( self, stim=None, nlags=None ):
         """Note this overloads SensoryBase because reshapes in full dimensions to handle folded_lags"""
@@ -848,11 +952,11 @@ class HartleyDataset(SensoryBase):
             return sp_stim
     # END .shift_stim() -- note outputs stim rather than overwrites
 
-    def shift_metas(self, pos_shifts, metrics=None, metric_threshold=1, ts_thresh=8,
+    def shift_meta(self, pos_shifts, metrics=None, metric_threshold=1, ts_thresh=8,
         shift_times=None, already_lagged=True ):
         """ Shift the relevant Hartley metadata. """
-        sp_metas = deepcopy(self.metas)
-        return sp_metas
+        sp_meta = deepcopy(self.meta)
+        return sp_meta
 
     def shift_stim_fixation( self, stim, shift):
         """Simple shift by integer (rounded shift) and zero padded. Note that this is not in 
@@ -890,7 +994,8 @@ class HartleyDataset(SensoryBase):
             is_valid[range(sts[0], np.minimum(sts[0]+post_sacc_gap, self.NT))] = 0
         
         #self.valid_inds = list(np.where(is_valid > 0)[0])
-        self.valid_inds = np.where(is_valid > 0)[0]
+        bool_T = (is_valid > 0 and is_valid < self.maxT) if self.maxT is not None else is_valid > 0
+        self.valid_inds = np.where(bool_T)[0]
     # END .create_valid_indices()
 
     def __getitem__(self, idx):
@@ -909,7 +1014,8 @@ class HartleyDataset(SensoryBase):
     
             else:
                 if len(self.cells_out) == 0:
-                    out = {'stim': self.stim[idx, :],
+                    out = {'meta': self.meta[idx,:],
+                        'stim': self.stim[idx, :],
                         'robs': self.robs[idx, :],
                         'dfs': self.dfs[idx, :]}
                     if len(self.fix_n) > 0:
@@ -924,7 +1030,8 @@ class HartleyDataset(SensoryBase):
                         robs_tmp =  self.robs[:, self.cells_out]
                         dfs_tmp =  self.dfs[:, self.cells_out]
  
-                    out = {'stim': self.stim[idx, :],
+                    out = {'meta':self.meta[idx,:],
+                        'stim': self.stim[idx, :],
                         'robs': robs_tmp[idx, :],
                         'dfs': dfs_tmp[idx, :]}
                     if len(self.fix_n) > 0:
@@ -984,8 +1091,8 @@ class HartleyDataset(SensoryBase):
             out['Xdrift'] = self.Xdrift[idx, :]
         if self.binocular:
             out['binocular'] = self.binocular_gain[idx, :]
-        for cov in self.covariates.keys():
-            out[cov] = self.covariates[cov][idx,...]
+        #for cov in self.covariates.keys():
+        #    out[cov] = self.covariates[cov][idx,...]
             
         ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)
