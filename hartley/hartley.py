@@ -661,6 +661,7 @@ class HartleyDataset(SensoryBase):
             tmp_meta = deepcopy(self.meta)
         else:
             tmp_meta = torch.tensor(meta, dtype=torch.float32) if isinstance(meta, np.ndarray) else meta.clone().detach()
+            print(tmp_meta.shape)
     
         NT = meta.shape[0]
         print("  Time embedding...")
@@ -1091,8 +1092,8 @@ class HartleyDataset(SensoryBase):
             out['Xdrift'] = self.Xdrift[idx, :]
         if self.binocular:
             out['binocular'] = self.binocular_gain[idx, :]
-        #for cov in self.covariates.keys():
-        #    out[cov] = self.covariates[cov][idx,...]
+        for cov in self.covariates.keys():
+            out[cov] = self.covariates[cov][idx,...]
             
         ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)
