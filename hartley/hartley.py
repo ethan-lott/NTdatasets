@@ -63,6 +63,7 @@ class HartleyDataset(SensoryBase):
         self.fhandles = [h5py.File(os.path.join(datadir, sess + '.mat'), 'r') for sess in self.filenames]
         self.avRs = None
 
+        self.one_hots = []
         self.meta_dims = []
         self.metaRaw = []
         self.meta = []
@@ -438,32 +439,26 @@ class HartleyDataset(SensoryBase):
     # END .is_fixpoint_present()
 
     def assemble_metadata(self,
-                       time_embed=0, num_lags=10,
-                       luminance_only=False,
-                       shifts=None, BUF=20,
-                       shift_times=None,
-                       fixdot=0):
+                       time_embed=0,
+                       num_lags=10
+                       ):
         """ This assembles the Hartley metadata from the raw numpy-stored metadata into self.meta """
         
-        # Delete existing meta and clear cache to prevent memory issues on GPU
+        # Delete existing metadata and clear cache to prevent memory issues on GPU
         if self.meta is not None:
             del self.meta
             self.meta = None
             torch.cuda.empty_cache()
-        num_clr = self.dims[0]
 
-        #if not isinstance(which_stim, int):
-        #    if which_stim in ['ET', 'et', 'stimET']:
-        #        which_stim=0
-        #    else:
-        #        which_stim=1
-        #if which_stim == 0:
-        #    print("Meta: using ET stimulus; N/A")
-        #else:
-        print("Meta: using laminar probe stimulus")
-        self.meta = torch.tensor(self.metaRaw, dtype=torch.float32, device=self.device)
+        self.one_hots = []
+        for meta_val in range(self.metaRaw.shape[3]):
+            oh = self.one_hot_encoder(self.metaRaw[:,:,:,meta_val])
+            self.one_hots.append(oh.reshape([self.NT, 1, 1, oh.shape[1]]))
+        self.one_hots = np.concatenate(self.one_hots, axis=3)
 
-        self.meta_dims = [1, 1, self.meta_vals, 1]
+        self.meta_dims = list(self.one_hots.shape[1:])+[1]
+        self.meta = torch.tensor(self.one_hots, dtype=torch.float32, device=self.device)
+
         '''if luminance_only:
             if self.dims[0] > 1:
                 # Resample first dimension of metadata
@@ -488,6 +483,7 @@ class HartleyDataset(SensoryBase):
         if time_embed > 0:
             if time_embed == 2:
                 self.meta = self.time_embedding_meta(self.meta, nlags=num_lags)
+
         # now metadata is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
 
         self.num_lags = num_lags
@@ -661,7 +657,6 @@ class HartleyDataset(SensoryBase):
             tmp_meta = deepcopy(self.meta)
         else:
             tmp_meta = torch.tensor(meta, dtype=torch.float32) if isinstance(meta, np.ndarray) else meta.clone().detach()
-            print(tmp_meta.shape)
     
         NT = meta.shape[0]
         print("  Time embedding...")
@@ -1094,7 +1089,6 @@ class HartleyDataset(SensoryBase):
             out['binocular'] = self.binocular_gain[idx, :]
         for cov in self.covariates.keys():
             out[cov] = self.covariates[cov][idx,...]
-            
         ### THIS IS NOT NEEDED WITH TIME-EMBEDDING: needs to be on fixation-process side...
         # cushion DFs for number of lags (reducing stim)
         #if (self.num_lags > 0) &  ~utils.is_int(idx):
@@ -1143,3 +1137,19 @@ class HartleyDataset(SensoryBase):
             'readY': np.arange(D[1], D[3])}
         return ranges
     # END .rectangle_overlap_ranges()
+
+    @staticmethod
+    def one_hot_encoder(arr):
+
+        arr = np.array(arr, dtype=np.float32).squeeze()
+        arrU = np.unique(arr)
+        arr_dict = {}
+
+        for i, a in enumerate(arrU):
+            arr_dict[a] = i
+
+        one_hot = np.zeros((arr.shape[0], len(arr_dict)), dtype=np.float32)
+        for i, a in enumerate(arr):
+            one_hot[i][arr_dict[a]] = 1
+        
+        return one_hot
