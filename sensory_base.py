@@ -29,7 +29,7 @@ class SensoryBase(Dataset):
         # Stim setup
         trial_sample=False,
         num_lags=10,
-        time_embed=2,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
+        time_embed=0,  # 0 is no time embedding, 1 is time_embedding with get_item, 2 is pre-time_embedded
         #maxT = None,
         # other
         include_MUs = False,
@@ -147,29 +147,31 @@ class SensoryBase(Dataset):
                 self.Mval_out = deepcopy(self.Mval[:, cell_list])
     # END SensoryBase.set_cells()
 
-    def time_embedding( self, stim=None, nlags=None ):
+    def time_embedding( self, stim=None, nlags=None, verbose=True ):
         """Assume all stim dimensions are flattened into single dimension. 
         Will only act on self.stim if 'stim' argument is left None"""
 
-        assert self.stim_dims is not None, "Need to assemble stim before time-embedding."
         if nlags is None:
             nlags = self.num_lags
-        if self.stim_dims[3] == 1:
-            self.stim_dims[3] = nlags
         if stim is None:
+            assert self.stim_dims is not None, "Need to assemble stim before time-embedding."
             tmp_stim = deepcopy(self.stim)
+            if self.stim_dims[3] == 1:  # should only time-embed stim by default, but not all the time
+                self.stim_dims[3] = nlags
         else:
             if isinstance(stim, np.ndarray):
                 tmp_stim = torch.tensor( stim, dtype=torch.float32)
             else:
                 tmp_stim = deepcopy(stim)
  
-        print( "  Time embedding..." )
+        if verbose:
+            print( "  Time embedding..." )
         NT = stim.shape[0]
         original_dims = None
         if len(tmp_stim.shape) != 2:
             original_dims = tmp_stim.shape
-            print( "Time embed: flattening stimulus from", original_dims)
+            if verbose:
+                print( "Time embed: flattening stimulus from", original_dims)
         tmp_stim = tmp_stim.reshape([NT, -1])  # automatically generates 2-dimensional stim
 
         #assert self.NT == NT, "TIME EMBEDDING: stim length mismatch"
@@ -177,7 +179,8 @@ class SensoryBase(Dataset):
         # Actual time-embedding itself
         tmp_stim = tmp_stim[np.arange(NT)[:,None]-np.arange(nlags), :]
         tmp_stim = torch.permute( tmp_stim, (0,2,1) ).reshape([NT, -1])
-        print( "  Done.")
+        if verbose:
+            print( "  Done.")
         return tmp_stim
     # END SensoryBase.time_embedding()
 
