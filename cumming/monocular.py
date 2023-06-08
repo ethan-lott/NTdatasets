@@ -184,6 +184,9 @@ class MultiDataset(SensoryBase):
             for bb in range(self.num_blocks):
                 self.dfs[np.arange(self.num_lags)+self.block_inds[bb][0], :] = 0.0
 
+        # Generate drift matrix if selected
+        self.construct_drift_design_matrix() 
+
         # Set up default cross-validation config
         self.crossval_setup()
     # END MultiDataset.__init__
@@ -272,9 +275,13 @@ class MultiDataset(SensoryBase):
             cells_out = np.array(self.cells_out, dtype=np.int64)
             assert len(cells_out) > 0, "DATASET: cells_out must be a non-zero length"
             assert np.max(cells_out) < self.robs.shape[1],  "DATASET: cells_out must be a non-zero length"
-            return {'stim': stim, 'robs': robs[:, cells_out], 'dfs': dfs[:, cells_out]}
+            out = {'stim': stim, 'robs': robs[:, cells_out], 'dfs': dfs[:, cells_out]}
         else:
-            return {'stim': stim, 'robs': robs, 'dfs': dfs}
+            out = {'stim': stim, 'robs': robs, 'dfs': dfs}
+        
+        if self.Xdrift is not None:
+            out['Xdrift'] = self.Xdrift[index, :]
+        return out
     # END MultiDataset.__get_item__
 
     def __len__(self):
