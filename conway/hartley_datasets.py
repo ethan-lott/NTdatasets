@@ -9,12 +9,6 @@ from copy import deepcopy
 import h5py
 from NTdatasets.sensory_base import SensoryBase
 
-
-#from torch.utils.data import Dataset
-#import os
-#import sys
-
-
 class HartleyDataset(SensoryBase):
         
     def __init__(self,
@@ -58,6 +52,7 @@ class HartleyDataset(SensoryBase):
         self.meta_dims = []
         self.hartley_metadata = []
         self.meta = []
+        self.OHcov = []
 
         self.fix_n = []
         self.used_inds = []
@@ -244,7 +239,7 @@ class HartleyDataset(SensoryBase):
 
         # Cross-validation setup
         self.crossval_setup()
-    # END ColorClouds.__init__
+    # END HartleyDataset.__init__
 
     # Develop default train, validation, and test datasets 
     def crossval_setup(self):
@@ -392,6 +387,19 @@ class HartleyDataset(SensoryBase):
 
         self.meta_dims = [1, np.sum(self.hartley_dims), 1, 1]
 
+        # Assemble ori/phase covariable
+        ori_i, phase_i = 1, 2
+        ori_dim, phase_dim = self.hartley_dims[ori_i], self.hartley_dims[phase_i]
+        oh = np.zeros([self.NT, ori_dim*phase_dim], dtype=np.float32)
+        for t in range(self.NT):
+            i = phase_dim*self.one_hots[ori_i][t].argmax() + self.one_hots[phase_i][t].argmax()
+            oh[t][i] = 1
+
+        if time_embed == 2:
+            self.OHcov = self.time_embedding(oh, nlags=num_lags, verbose=False)
+        else:
+            self.OHcov = torch.tensor(oh, dtype=torch.float32, device=self.device)
+
         # Assemble full one-hot 
         self.one_hots = np.concatenate(self.one_hots, axis=1)
         self.meta = torch.tensor(self.one_hots, dtype=torch.float32, device=self.device)
@@ -418,172 +426,6 @@ class HartleyDataset(SensoryBase):
         # Flatten meta 
         self.meta = self.meta.reshape([self.NT, -1])
     # END .assemble_metadata()
-        
-    def assemble_stimulus(self,
-        which_stim=None, stim_wrap=None, stim_crop=None, # conventional stim: ET=0, lam=1,
-        top_corner=None, L=None,  # position of stim
-        time_embed=0, num_lags=10,
-        luminance_only=False,
-        shifts=None, BUF=20, # shift buffer
-        shift_times=None, # So that can put partial-shifts over time range in stimulus
-        fixdot=0 ):
-        """This assembles a stimulus from the raw numpy-stored stimuli into self.stim
-        which_stim: determines what stimulus is assembled from 'ET'=0, 'lam'=1, None
-            If none, will need top_corner present: can specify with four numbers (top-left, bot-right)
-            or just top_corner and L
-        which is torch.tensor on default device
-        stim_wrap: only works if using 'which_stim', and will be [hwrap, vwrap]"""
-
-        # Delete existing stim and clear cache to prevent memory issues on GPU
-        if self.stim is not None:
-            del self.stim
-            self.stim = None
-            torch.cuda.empty_cache()
-        num_clr = self.dims[0]
-        need2crop = False
-
-        if which_stim is not None:
-            assert L is None, "ASSEMBLE_STIMULUS: cannot specify L if using which_stim (i.e. prepackaged stim)"
-            L = self.dims[1]
-            if not isinstance(which_stim, int):
-                if which_stim in ['ET', 'et', 'stimET']:
-                    which_stim=0
-                else:
-                    which_stim=1
-            if which_stim == 0:
-                print("Stim: using ET stimulus")
-                self.stim = torch.tensor( self.stimET, dtype=torch.float32, device=self.device )
-                self.stim_pos = self.stim_locationET[:,0]
-            else:
-                print("Stim: using laminar probe stimulus")
-                self.stim = torch.tensor( self.stimLP, dtype=torch.float32, device=self.device )
-                self.stim_pos = self.stim_location[:, 0]
-
-        else:
-            assert top_corner is not None, "Need top corner if which_stim unspecified"
-            # Assemble from combination of ET and laminer probe (NP) stimulus
-            if len(top_corner) == 4:
-                self.stim_pos = top_corner
-                #L = self.stim_pos[2]-self.stim_pos[0]
-                assert self.stim_pos[3]-self.stim_pos[1] == self.stim_pos[2]-self.stim_pos[0], "Stim must be square (for now)"
-            else:
-                if L is None:
-                    L = self.dims[1]
-                self.stim_pos = [top_corner[0], top_corner[1], top_corner[0]+L, top_corner[1]+L]
-            if shifts is not None:
-                need2crop = True
-                # Modify stim window by 20-per-side
-                self.stim_pos = [
-                    self.stim_pos[0]-BUF,
-                    self.stim_pos[1]-BUF,
-                    self.stim_pos[2]+BUF,
-                    self.stim_pos[3]+BUF]
-                print( "  Stim expansion for shift:", self.stim_pos)
-
-            L = self.stim_pos[2]-self.stim_pos[0]
-            assert self.stim_pos[3]-self.stim_pos[1] == L, "Stimulus not square"
-
-            newstim = np.zeros( [self.NT, num_clr, L, L] )
-            for ii in range(self.stim_location.shape[1]):
-                OVLP = self.rectangle_overlap_ranges(self.stim_pos, self.stim_location[:, ii])
-                if OVLP is not None:
-                    print("  Writing lam stim %d: overlap %d, %d"%(ii, len(OVLP['targetX']), len(OVLP['targetY'])))
-                    strip = deepcopy(newstim[:, :, OVLP['targetX'], :]) #np.zeros([self.NT, num_clr, len(OVLP['targetX']), L])
-                    strip[:, :, :, OVLP['targetY']] = deepcopy((self.stimLP[:, :, OVLP['readX'], :][:, :, :, OVLP['readY']]))
-                    newstim[:, :, OVLP['targetX'], :] = deepcopy(strip)
-                
-            self.stim = torch.tensor( newstim, dtype=torch.float32, device=self.device )
-
-        #print('Stim shape', self.stim.shape)
-        # Note stim stored in numpy is being represented as full 3-d + 1 tensor (time, channels, NX, NY)
-        self.stim_dims = [self.dims[0], L, L, 1]
-        if luminance_only:
-            if self.dims[0] > 1:
-                # Resample first dimension of stimulus
-                print('  Shifting to luminance-only')
-                stim_tmp = deepcopy(self.stim.reshape([-1]+self.stim_dims[:3]))
-                del self.stim
-                torch.cuda.empty_cache()
-                self.stim = deepcopy(stim_tmp[:, [0], ...])
-                self.stim_dims[0] = 1            
-
-        # Insert fixation point
-        if (fixdot is not None) and self.is_fixpoint_present( self.stim_pos ):
-            fixranges = [None, None]
-            for dd in range(2):
-                fixranges[dd] = np.arange(
-                    np.maximum(self.fix_location[dd]-self.fix_size-self.stim_pos[dd], 0),
-                    np.minimum(self.fix_location[dd]+self.fix_size+1, self.stim_pos[dd+2])-self.stim_pos[dd] 
-                    ).astype(int)
-            # Write the correct value to stim
-            #print(fixranges)
-            assert fixdot == 0, "Haven't yet put in other fixdot settings than zero" 
-            #strip = deepcopy(self.stim[:, :, fixranges[0], :])
-            #strip[:, :, :, fixranges[1]] = 0
-            #self.stim[:, :, fixranges[0], :] = deepcopy(strip) 
-            print('  Adding fixation point')
-            for xx in fixranges[0]:
-                self.stim[:, :, xx, fixranges[1]] = 0
-
-        self.stim_shifts = shifts
-        if self.stim_shifts is not None:
-            # Would want to shift by input eye positions if input here
-            #print('eye-position shifting not implemented yet')
-            print('  Shifting stim...')
-            if shift_times is None:
-                self.stim = self.shift_stim( shifts, shift_times=shift_times, already_lagged=False )
-            else:
-                self.stim[shift_times, ...] = self.shift_stim( shifts, shift_times=shift_times, already_lagged=False )
-
-        # Reduce size back to original If expanded to handle shifts
-        if need2crop:
-            #assert self.stim_crop is None, "Cannot crop stim at same time as shifting"
-            self.crop_stim( [BUF, L-BUF-1, BUF, L-BUF-1] )  # move back to original size
-            self.stim_crop = None
-            L = L-2*BUF
-            self.stim_dims[1] = L
-            self.stim_dims[2] = L
-        else:
-            self.stim_crop = stim_crop 
-            if self.stim_crop is not None:
-                self.crop_stim()
-
-        if time_embed is not None:
-            self.time_embed = time_embed
-        if time_embed > 0:
-            #self.stim_dims[3] = num_lags  # this is set by time-embedding
-            if time_embed == 2:
-                self.stim = self.time_embedding( self.stim, nlags = num_lags )
-        # now stimulus is represented as full 4-d + 1 tensor (time, channels, NX, NY, num_lags)
-
-        self.num_lags = num_lags
-
-        # Flatten stim 
-        self.stim = self.stim.reshape([self.NT, -1])
-        print( "  Done" )
-    # END .assemble_stimulus()
-
-#    def time_embedding(self, meta=None, nlags=None):
-#        """Note this overloads SensoryBase because reshapes in full dimensions to handle folded_lags"""
-#        #assert self.meta_dims is not None, "Need to assemble meta before time-embedding."
-#        if nlags is None:
-#            nlags = self.num_lags
-#        #if self.meta_dims[3] == 1:
-#        #    self.meta_dims[3] = nlags
-#        if meta is None:
-#            tmp_meta = deepcopy(self.meta)
-#        else:
-#            tmp_meta = torch.tensor(meta, dtype=torch.float32) if isinstance(meta, np.ndarray) else meta.clone().detach()
-#    
-#        NT = meta.shape[0]
-#        print("  Time embedding...")
-#        assert self.NT == NT, "TIME EMBEDDING: meta length mismatch"
-
-#        tmp_meta = tmp_meta[np.arange(NT)[:,None]-np.arange(nlags), :]
-#        tmp_meta = torch.permute(tmp_meta, (0,2,1))
-     
-#        return tmp_meta
-#    # END .time_embedding (for metadata)
 
     def process_fixations( self, sacc_in=None ):
         """Processes fixation informatiom from dataset, but also allows new saccade detection
@@ -859,7 +701,8 @@ class HartleyDataset(SensoryBase):
             'OHfreq': self.OHfreq[idx, :],
             'OHori': self.OHori[idx, :],
             'OHphase': self.OHphase[idx, :],
-            'OHcolor': self.OHcolor[idx, :]}
+            'OHcolor': self.OHcolor[idx, :],
+            'OHcov': self.OHcov[idx, :]}
         
         if len(self.fix_n) > 0:
             out['fix_n'] = self.fix_n[idx]
