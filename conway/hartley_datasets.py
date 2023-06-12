@@ -390,10 +390,12 @@ class HartleyDataset(SensoryBase):
         # Assemble ori/phase covariable
         ori_i, phase_i = 1, 2
         ori_dim, phase_dim = self.hartley_dims[ori_i], self.hartley_dims[phase_i]
-        oh = np.zeros([self.NT, ori_dim*phase_dim], dtype=np.float32)
+        oh = np.zeros([self.NT, phase_dim, ori_dim], dtype=np.float32)
         for t in range(self.NT):
-            i = phase_dim*self.one_hots[ori_i][t].argmax() + self.one_hots[phase_i][t].argmax()
-            oh[t][i] = 1
+            p = self.one_hots[phase_i][t].argmax()
+            o = self.one_hots[ori_i][t].argmax()
+            oh[t,p,o] = 1
+        oh = oh.reshape(self.NT, -1)
 
         if time_embed == 2:
             self.OHcov = self.time_embedding(oh, nlags=num_lags, verbose=False)
