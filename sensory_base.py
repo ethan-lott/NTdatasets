@@ -33,6 +33,7 @@ class SensoryBase(Dataset):
         #maxT = None,
         # other
         include_MUs = False,
+        preload = True,
         drift_interval = None,
         device=torch.device('cpu')
         ):
@@ -46,7 +47,7 @@ class SensoryBase(Dataset):
         self.num_lags = num_lags
         self.stim_dims = None
         self.time_embed = time_embed
-        self.preload = True
+        self.preload =preload
         self.drift_interval = drift_interval
 
         # Assign standard variables
